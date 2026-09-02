@@ -168,7 +168,15 @@ begin
     except
     end;
   finally
-    TCPClient.Free;
+    try
+      TCPClient.Free;
+    except
+      // Известная особенность Indy: после неудачного Connect деструктор
+      // TIdTCPClient может сам попытаться разорвать соединение и упасть с
+      // EIdNotASocket ("Socket Error #10038 Socket operation on non-socket").
+      // Память объекта при этом всё равно освобождается штатно, поэтому
+      // просто гасим исключение, чтобы оно не «вылетало» из потока.
+    end;
   end;
   Synchronize(UpdateUI);
 end;
