@@ -567,10 +567,16 @@ end;
 procedure TForm1.StringGrid1ContextPopup(Sender: TObject; MousePos: TPoint;
   var Handled: Boolean);
 var
+  ClientPos: TPoint;
   ACol, ARow: Integer;
   HasRow: Boolean;
 begin
-  StringGrid1.MouseToCell(MousePos.X, MousePos.Y, ACol, ARow);
+  // MousePos приходит в экранных координатах (так его передаёт VCL из
+  // WM_CONTEXTMENU), а MouseToCell ждёт координаты относительно самого
+  // StringGrid1 — без этого преобразования ARow/ACol получались случайными,
+  // и меню либо не показывалось вовсе, либо появлялось не для той строки.
+  ClientPos := StringGrid1.ScreenToClient(MousePos);
+  StringGrid1.MouseToCell(ClientPos.X, ClientPos.Y, ACol, ARow);
 
   if (ARow <= 0) or (ARow >= StringGrid1.RowCount) then
   begin
