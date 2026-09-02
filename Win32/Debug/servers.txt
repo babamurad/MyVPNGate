@@ -1,96 +1,98 @@
-219.100.37.96,443,Japan,TCP,ќжидание
-219.100.37.25,443,Japan,TCP,ќжидание
-219.100.37.102,443,Japan,TCP,ќжидание
-219.100.37.219,443,Japan,TCP,ќжидание
-219.100.37.114,443,Japan,TCP,ќжидание
-219.100.37.84,443,Japan,TCP,ќжидание
-219.100.37.191,443,Japan,TCP,ќжидание
-219.100.37.213,443,Japan,TCP,ќжидание
-219.100.37.128,443,Japan,TCP,ќжидание
-219.100.37.14,443,Japan,TCP,ќжидание
-219.100.37.85,443,Japan,TCP,ќжидание
-106.158.139.230,1723,Japan,TCP,ќжидание
-153.225.227.12,1246,Japan,TCP,ќжидание
-118.34.210.174,1819,Korea Republic of,TCP,ќжидание
-119.193.44.139,995,Korea Republic of,TCP,ќжидание
-59.133.158.94,992,Japan,TCP,ќжидание
-221.164.191.75,1837,Korea Republic of,TCP,ќжидание
-217.138.212.62,443,Romania,TCP,ќжидание
-115.179.206.241,443,Japan,TCP,ќжидание
-125.14.139.222,1594,Japan,TCP,ќжидание
-110.163.135.59,1194,Japan,TCP,ќжидание
-219.100.37.87,443,Japan,TCP,ќжидание
-219.100.37.60,443,Japan,TCP,ќжидание
-46.183.131.41,2819,Russian Federation,TCP,ќжидание
-49.48.251.41,1586,Thailand,TCP,ќжидание
-219.100.37.222,443,Japan,TCP,ќжидание
-219.100.37.181,443,Japan,TCP,ќжидание
-60.121.223.189,1592,Japan,TCP,ќжидание
-14.39.63.149,1510,Korea Republic of,TCP,ќжидание
-5.143.97.121,1937,Russian Federation,TCP,ќжидание
-42.119.41.177,1660,Viet Nam,TCP,ќжидание
-202.226.243.14,1538,Japan,TCP,ќжидание
-217.178.206.130,13795,Japan,TCP,ќжидание
-95.70.54.242,1525,Russian Federation,TCP,ќжидание
-113.197.25.204,1572,Japan,TCP,ќжидание
-211.253.91.236,1570,Korea Republic of,TCP,ќжидание
-220.153.169.228,1926,Japan,TCP,ќжидание
-60.147.198.161,1571,Japan,TCP,ќжидание
-58.183.26.215,1858,Japan,TCP,ќжидание
-106.165.34.211,1648,Japan,TCP,ќжидание
-114.183.172.26,1917,Japan,TCP,ќжидание
-116.82.239.43,1291,Japan,TCP,ќжидание
-116.12.3.63,1871,Japan,TCP,ќжидание
-180.4.30.208,1892,Japan,TCP,ќжидание
-222.8.219.52,1219,Japan,TCP,ќжидание
-218.41.150.225,1195,Japan,TCP,ќжидание
-27.130.100.241,1313,Thailand,TCP,ќжидание
-222.97.157.46,1673,Korea Republic of,TCP,ќжидание
-126.66.7.215,1347,Japan,TCP,ќжидание
-203.254.112.173,995,Korea Republic of,TCP,ќжидание
-37.23.239.203,1555,Russian Federation,TCP,ќжидание
-1.230.209.219,995,Korea Republic of,TCP,ќжидание
-112.164.42.133,995,Korea Republic of,TCP,ќжидание
-222.116.15.246,995,Korea Republic of,TCP,ќжидание
-126.216.148.248,1449,Japan,TCP,ќжидание
-175.240.182.91,1762,Korea Republic of,TCP,ќжидание
-221.153.69.130,995,Korea Republic of,TCP,ќжидание
-94.51.79.166,1278,Russian Federation,TCP,ќжидание
-92.167.102.198,1526,France,TCP,ќжидание
-126.28.212.112,1251,Japan,TCP,ќжидание
-49.49.251.34,1962,Thailand,TCP,ќжидание
-126.5.55.43,1453,Japan,TCP,ќжидание
-39.111.168.184,1335,Japan,TCP,ќжидание
-61.26.8.101,1598,Japan,TCP,ќжидание
-114.190.156.54,1791,Japan,TCP,ќжидание
-219.113.61.29,1782,Japan,TCP,ќжидание
-217.178.206.120,35705,Japan,TCP,ќжидание
-182.224.22.78,1285,Korea Republic of,TCP,ќжидание
-212.164.38.67,5387,Russian Federation,TCP,ќжидание
-222.119.202.135,995,Korea Republic of,TCP,ќжидание
-126.1.166.181,1569,Japan,TCP,ќжидание
-61.78.191.55,995,Korea Republic of,TCP,ќжидание
-213.110.206.3,1694,Russian Federation,TCP,ќжидание
-121.160.226.66,1237,Korea Republic of,TCP,ќжидание
-46.242.8.4,6835,Russian Federation,TCP,ќжидание
-210.107.194.124,995,Korea Republic of,TCP,ќжидание
-183.105.2.201,1809,Korea Republic of,TCP,ќжидание
-222.113.212.9,995,Korea Republic of,TCP,ќжидание
-210.179.22.16,995,Korea Republic of,TCP,ќжидание
-2.62.135.198,1956,Russian Federation,TCP,ќжидание
-210.178.16.41,995,Korea Republic of,TCP,ќжидание
-220.86.172.134,995,Korea Republic of,TCP,ќжидание
-175.123.68.12,1829,Korea Republic of,TCP,ќжидание
-42.113.180.122,1509,Viet Nam,TCP,ќжидание
-118.47.182.233,995,Korea Republic of,TCP,ќжидание
-169.214.146.19,995,Korea Republic of,TCP,ќжидание
-49.230.73.175,60784,Thailand,TCP,ќжидание
-59.10.57.184,1930,Korea Republic of,TCP,ќжидание
-94.190.50.143,1470,Russian Federation,TCP,ќжидание
-210.90.151.86,1202,Korea Republic of,TCP,ќжидание
-37.111.44.251,37706,Myanmar,TCP,ќжидание
-14.32.88.164,995,Korea Republic of,TCP,ќжидание
-183.100.138.144,1766,Korea Republic of,TCP,ќжидание
-109.126.32.153,2306,Russian Federation,TCP,ќжидание
-176.214.79.212,50817,Russian Federation,TCP,ќжидание
-188.232.130.220,995,Russian Federation,TCP,ќжидание
+219.100.37.96,443,Japan,17,251,9,TCP
+219.100.37.102,443,Japan,17,451,2,TCP
+219.100.37.25,443,Japan,23,208,5,TCP
+73.131.220.236,1649,United States,20,-,TCP,ќжидание
+219.100.37.219,443,Japan,13,200,3,TCP
+219.100.37.114,443,Japan,27,477,6,TCP
+219.100.37.84,443,Japan,16,540,1,TCP
+219.100.37.191,443,Japan,9,351,8,TCP
+219.100.37.213,443,Japan,18,238,4,TCP
+219.100.37.128,443,Japan,11,218,3,TCP
+219.100.37.14,443,Japan,22,254,3,TCP
+219.100.37.85,443,Japan,20,325,6,TCP
+114.189.206.90,1674,Japan,5,132,1,TCP
+125.253.56.120,1521,Australia,4,85,8,TCP
+211.52.54.185,1302,Korea Republic of,28,126,5,TCP
+59.133.158.94,992,Japan,10,571,5,TCP
+217.138.212.62,443,Romania,15,286,1,TCP
+115.179.206.241,443,Japan,24,120,0,TCP
+125.240.231.29,995,Korea Republic of,38,734,4,TCP
+165.246.170.46,1740,Korea Republic of,37,28,8,TCP
+219.100.37.87,443,Japan,17,365,7,TCP
+121.185.107.63,995,Korea Republic of,29,69,8,TCP
+1.241.203.229,995,Korea Republic of,31,403,2,TCP
+110.163.135.59,1194,Japan,7,328,0,TCP
+219.100.37.60,443,Japan,18,200,5,TCP
+118.33.153.180,1274,Korea Republic of,36,85,1,TCP
+219.100.37.222,443,Japan,11,127,7,TCP
+113.59.143.62,1633,Korea Republic of,36,17,9,TCP
+219.100.37.181,443,Japan,10,799,2,TCP
+1.55.64.254,1783,Viet Nam,33,85,4,TCP
+223.207.233.25,1304,Thailand,9,324,1,UDP
+183.77.114.224,1723,Japan,16,212,8,TCP
+126.187.82.129,1522,Japan,15,179,2,TCP
+218.238.196.27,995,Korea Republic of,36,504,5,TCP
+222.112.63.117,1212,Korea Republic of,32,26,2,TCP
+60.127.235.152,1411,Japan,11,111,2,TCP
+1.54.130.194,1892,Viet Nam,20,386,8,TCP
+87.225.107.25,1968,Russian Federation,120,369,5,TCP
+49.250.39.50,1253,Japan,21,212,0,TCP
+182.8.195.238,10959,Indonesia,19,85,5,UDP
+218.150.110.94,1764,Korea Republic of,27,124,0,TCP
+60.103.41.220,1835,Japan,5,64,4,TCP
+27.138.221.179,1954,Japan,20,230,7,TCP
+164.70.137.225,1220,Japan,3,438,8,TCP
+42.144.208.76,1815,Japan,35,144,2,TCP
+118.83.39.22,1898,Japan,18,184,9,TCP
+122.199.109.234,1195,Korea Republic of,36,70,0,UDP
+58.95.143.53,1486,Japan,4,90,6,TCP
+34.222.2.182,1419,United States,4,-,TCP,ќжидание
+42.113.178.177,1686,Viet Nam,30,86,0,TCP
+118.41.107.218,1612,Korea Republic of,27,120,4,TCP
+119.194.142.71,995,Korea Republic of,30,546,9,TCP
+59.27.70.102,1224,Korea Republic of,31,82,7,TCP
+121.162.193.161,995,Korea Republic of,30,84,8,TCP
+46.183.135.174,1641,Russian Federation,110,122,1,TCP
+121.170.31.136,995,Korea Republic of,28,84,5,TCP
+119.193.43.123,1561,Korea Republic of,33,453,7,TCP
+36.8.6.31,1237,Japan,5,307,6,TCP
+211.184.37.208,1283,Korea Republic of,33,92,9,TCP
+59.13.215.191,995,Korea Republic of,34,559,4,TCP
+106.161.34.210,1998,Japan,3,883,3,TCP
+157.147.202.38,1936,Japan,17,214,5,TCP
+217.178.199.192,57685,Japan,10,399,4,UDP
+60.142.245.177,1925,Japan,5,421,5,TCP
+1.33.220.151,1774,Japan,15,82,8,TCP
+27.130.12.111,1581,Thailand,4,198,0,UDP
+175.132.130.28,1624,Japan,3,961,2,TCP
+126.208.123.206,1706,Japan,7,85,6,TCP
+222.110.236.72,1238,Korea Republic of,32,837,3,TCP
+27.95.108.240,1581,Japan,2,766,9,TCP
+133.114.178.203,1195,Japan,19,756,9,UDP
+125.24.103.41,1768,Thailand,2,108,6,TCP
+223.205.249.96,1893,Thailand,13,554,6,UDP
+95.170.182.73,4445,Russian Federation,64,163,3,UDP
+113.153.253.110,1352,Japan,3,42,8,UDP
+59.16.154.5,443,Korea Republic of,32,203,8,TCP
+61.82.185.182,995,Korea Republic of,28,356,2,TCP
+171.6.242.218,1717,Thailand,14,563,8,UDP
+1.176.241.219,995,Korea Republic of,34,602,4,TCP
+169.212.42.58,1856,Korea Republic of,31,37,4,TCP
+218.148.161.56,995,Korea Republic of,30,181,3,TCP
+59.7.136.6,1414,Korea Republic of,31,365,5,TCP
+121.172.56.69,995,Korea Republic of,33,477,0,TCP
+117.55.166.10,995,Korea Republic of,38,85,0,TCP
+49.142.98.219,1544,Korea Republic of,32,65,6,TCP
+83.69.0.233,1195,Russian Federation,33,70,0,UDP
+1.234.134.66,1657,Korea Republic of,30,133,1,TCP
+119.64.47.204,995,Korea Republic of,35,33,1,TCP
+211.248.4.172,1590,Korea Republic of,31,85,4,TCP
+117.110.198.131,995,Korea Republic of,37,809,7,TCP
+31.171.198.154,1428,Russian Federation,32,179,7,UDP
+175.192.186.64,1752,Korea Republic of,32,45,3,TCP
+125.191.24.19,1855,Korea Republic of,40,96,0,TCP
+221.163.29.204,995,Korea Republic of,31,278,7,TCP
+182.231.233.37,1253,Korea Republic of,41,80,3,TCP
+182.210.237.200,1549,Korea Republic of,44,145,7,TCP
+2.191.80.75,1331,Iran (ISLAMIC Republic Of),41,38,1,TCP
+94.26.0.82,20044,Hong Kong,39,44,8,UDP
