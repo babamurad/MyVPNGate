@@ -711,7 +711,7 @@ var
   RemoteParts: TArray<string>;
   Lines, Columns, OVPNLines: TStringList;
   i, j: Integer;
-  SpeedBps: Int64;
+  SpeedBps, SpeedTenths: Int64;
   FoundRemote: Boolean;
 begin
   Client := TNetHTTPClient.Create(nil);
@@ -754,13 +754,21 @@ begin
           if (Columns.Count > 3) and (Trim(Columns[3]) <> '') then
             PingStr := Trim(Columns[3]);
 
-          // Скорость (колонка 4, бит/с) — переводим в Мбит/с для удобства чтения
+          // Скорость (колонка 4, бит/с) — переводим в Мбит/с (десятые доли).
+          // Точка как разделитель дробной части задаётся вручную, без
+          // FormatFloat: он берёт разделитель из региональных настроек
+          // Windows, и на русской локали это запятая — а запятая внутри
+          // значения ломает разбор CSV-строки FTempServers ниже и сдвигает
+          // все последующие поля (Пинг/Скорость/Протокол/Статус).
           SpeedStr := '-';
           if Columns.Count > 4 then
           begin
             SpeedBps := StrToInt64Def(Trim(Columns[4]), 0);
             if SpeedBps > 0 then
-              SpeedStr := FormatFloat('0.0', SpeedBps / 1000000);
+            begin
+              SpeedTenths := Round(SpeedBps / 100000);
+              SpeedStr := IntToStr(SpeedTenths div 10) + '.' + IntToStr(SpeedTenths mod 10);
+            end;
           end;
 
           // По умолчанию OpenVPN использует UDP, если явно не указано иное —
