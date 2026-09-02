@@ -75,7 +75,7 @@ object Form1: TForm1
     Left = 0
     Top = 89
     Width = 881
-    Height = 502
+    Height = 521
     Align = alClient
     ColCount = 4
     RowCount = 2
@@ -84,22 +84,6 @@ object Form1: TForm1
     OnClick = StringGrid1Click
     ExplicitWidth = 994
     ExplicitHeight = 450
-  end
-  object StatusBar1: TStatusBar
-    Left = 0
-    Top = 591
-    Width = 881
-    Height = 19
-    Panels = <
-      item
-        Width = 150
-      end
-      item
-        Width = 100
-      end>
-    ExplicitLeft = 448
-    ExplicitTop = 312
-    ExplicitWidth = 0
   end
   object NetHTTPClient1: TNetHTTPClient
     UserAgent = 'Embarcadero URI Client/1.0'

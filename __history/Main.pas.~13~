@@ -8,7 +8,7 @@ uses
   IdTCPConnection, IdTCPClient, IdHTTP, Vcl.Grids, Vcl.StdCtrls, Vcl.ExtCtrls,
   Clipbrd, System.NetEncoding,
   System.Net.URLClient, System.Net.HttpClient, System.Net.HttpClientComponent,
-  Vcl.ComCtrls, System.ImageList, Vcl.ImgList;
+  Vcl.ComCtrls;
 
 type
   TForm1 = class; // Предварительное объявление
@@ -51,8 +51,6 @@ type
     StringGrid1: TStringGrid;
     NetHTTPClient1: TNetHTTPClient;
     ProgressBar1: TProgressBar;
-    ImageList1: TImageList;
-    StatusBar1: TStatusBar;
     procedure Button1Click(Sender: TObject);
     procedure Button2Click(Sender: TObject);
     procedure Button3Click(Sender: TObject);
@@ -66,7 +64,6 @@ type
     procedure StringGrid1Click(Sender: TObject);
   private
     procedure SaveListToFile;
-    procedure UpdateStats;
   public
     { Public declarations }
   end;
@@ -187,8 +184,6 @@ begin
     SL.Free;
     Columns.Free;
   end;
-
-  UpdateStats;
 end;
 
 procedure TForm1.FormResize(Sender: TObject);
@@ -206,19 +201,105 @@ begin
 end;
 
 procedure TForm1.Button1Click(Sender: TObject);
+var
+  CSVData, OVPN, PortStr: string;
+  Lines, Columns, OVPNLines, TempServers: TStringList;
+  i, j, P: Integer;
+  RowIdx: Integer;
 begin
-  // Прячем кнопку, чтобы исключить повторные нажатия
-  Button1.Visible := False;
-
-  // Показываем прогресс-бар ровно на месте кнопки
-  ProgressBar1.Left := Button1.Left;
-  ProgressBar1.Top := Button1.Top;
-  ProgressBar1.Width := Button1.Width;
-  ProgressBar1.Height := Button1.Height;
+  // Включаем и запускаем бегущий прогресс-бар
   ProgressBar1.Visible := True;
+  // Обработка интерфейса «на лету», чтобы анимация не замирала
+  Application.ProcessMessages;
 
-  // Запускаем фоновую загрузку
-  TUpdateThread.Create(Self);
+  try
+    try
+      NetHTTPClient1.UserAgent := 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36';
+      CSVData := NetHTTPClient1.Get('https://www.vpngate.net/api/iphone/').ContentAsString();
+    except
+      on E: Exception do
+      begin
+        ShowMessage('Ошибка скачивания: ' + E.Message);
+        Exit;
+      end;
+    end;
+
+    Lines := TStringList.Create;
+    Columns := TStringList.Create;
+    OVPNLines := TStringList.Create;
+    TempServers := TStringList.Create;
+    Columns.StrictDelimiter := True;
+    Columns.Delimiter := ',';
+
+    try
+      Lines.Text := CSVData;
+
+      for i := 0 to Lines.Count - 1 do
+      begin
+        if (Trim(Lines[i]) = '') or (Lines[i][1] = '*') then Continue;
+        Columns.DelimitedText := Lines[i];
+        if (Columns.Count > 1) and (Columns[1] = 'IP') then Continue;
+
+        if Columns.Count > 14 then
+        begin
+          PortStr := '443';
+          try
+            OVPN := TNetEncoding.Base64.Decode(Columns[14]);
+            OVPNLines.Text := OVPN;
+
+            for j := 0 to OVPNLines.Count - 1 do
+            begin
+              if Pos('remote ', Trim(OVPNLines[j])) = 1 then
+              begin
+                PortStr := Trim(OVPNLines[j]);
+                Delete(PortStr, 1, 7);
+                PortStr := Trim(PortStr);
+                P := Pos(' ', PortStr);
+                if P > 0 then
+                begin
+                  Delete(PortStr, 1, P);
+                  PortStr := Trim(PortStr);
+                  Break;
+                end;
+              end;
+            end;
+          except
+          end;
+
+          TempServers.Add(Columns[1] + ',' + PortStr + ',TCP,Ожидание');
+        end;
+      end;
+
+      if TempServers.Count > 0 then
+        StringGrid1.RowCount := TempServers.Count + 1
+      else
+        StringGrid1.RowCount := 2;
+
+      for i := 0 to TempServers.Count - 1 do
+      begin
+        RowIdx := i + 1;
+        Columns.DelimitedText := TempServers[i];
+        if Columns.Count >= 4 then
+        begin
+          StringGrid1.Cells[0, RowIdx] := Columns[0];
+          StringGrid1.Cells[1, RowIdx] := Columns[1];
+          StringGrid1.Cells[2, RowIdx] := Columns[2];
+          StringGrid1.Cells[3, RowIdx] := Columns[3];
+        end;
+      end;
+
+    finally
+      Lines.Free;
+      Columns.Free;
+      OVPNLines.Free;
+      TempServers.Free;
+    end;
+    SaveListToFile;
+
+  finally
+    // В любом случае (успех или ошибка) выключаем прогресс-бар
+    ProgressBar1.Visible := False;
+  end;
 end;
 
 procedure TForm1.Button2Click(Sender: TObject);
@@ -281,7 +362,6 @@ begin
     TempList.Free;
   end;
   SaveListToFile;
-  UpdateStats;
 end;
 
 procedure TForm1.StringGrid1DrawCell(Sender: TObject; ACol, ARow: Integer;
@@ -323,27 +403,6 @@ begin
   StringGrid1.Canvas.TextRect(Rect, Rect.Left + 8, Rect.Top + 6, StringGrid1.Cells[ACol, ARow]);
 end;
 
-
-procedure TForm1.UpdateStats;
-var
-  i, Total, Working: Integer;
-begin
-  Total := 0;
-  Working := 0;
-
-  for i := 1 to StringGrid1.RowCount - 1 do
-  begin
-    if Trim(StringGrid1.Cells[0, i]) <> '' then
-    begin
-      Inc(Total);
-      if StringGrid1.Cells[3, i] = 'Работает!' then
-        Inc(Working);
-    end;
-  end;
-
-  StatusBar1.Panels[0].Text := 'Всего серверов: ' + IntToStr(Total);
-  StatusBar1.Panels[1].Text := 'Работает: ' + IntToStr(Working);
-end;
 
 procedure TForm1.StringGrid1Click(Sender: TObject);
 var
@@ -488,9 +547,8 @@ var
   Cols: TArray<string>;
   RowIdx: Integer;
 begin
-  // Скрываем прогресс-бар и возвращаем кнопку на место
+  // Скрываем прогресс-бар
   FForm.ProgressBar1.Visible := False;
-  FForm.Button1.Visible := True;
 
   if not FSuccess then
   begin
@@ -517,8 +575,6 @@ begin
   end;
 
   FForm.SaveListToFile;
-
-  FForm.UpdateStats;
 end;
 
 end.

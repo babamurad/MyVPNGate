@@ -90,13 +90,7 @@ object Form1: TForm1
     Top = 591
     Width = 881
     Height = 19
-    Panels = <
-      item
-        Width = 150
-      end
-      item
-        Width = 100
-      end>
+    Panels = <>
     ExplicitLeft = 448
     ExplicitTop = 312
     ExplicitWidth = 0

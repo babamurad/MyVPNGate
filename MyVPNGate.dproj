@@ -58,6 +58,7 @@
         <UWP_DelphiLogo44>$(BDS)\bin\Artwork\Windows\UWP\delphi_UwpDefault_44.png</UWP_DelphiLogo44>
         <UWP_DelphiLogo150>$(BDS)\bin\Artwork\Windows\UWP\delphi_UwpDefault_150.png</UWP_DelphiLogo150>
         <SanitizedProjectName>MyVPNGate</SanitizedProjectName>
+        <Custom_Styles>Amakrits|VCLSTYLE|$(BDSCOMMONDIR)\Styles\Amakrits.vsf;Carbon|VCLSTYLE|$(BDSCOMMONDIR)\Styles\Carbon.vsf</Custom_Styles>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Base_Win32)'!=''">
         <DCC_UsePackage>dxPSdxSpreadSheetLnkRS28;vclwinx;DataSnapServer;fmx;emshosting;vclie;DbxCommonDriver;bindengine;IndyIPCommon;VCLRESTComponents;DBXMSSQLDriver;FireDACCommonODBC;emsclient;FireDACCommonDriver;dxHttpIndyRequestRS28;appanalytics;IndyProtocols;vclx;cxExportRS28;dxPSPrVwRibbonRS28;IndyIPClient;dbxcds;vcledge;cxLibraryRS28;dxCloudServiceLibraryRS28;bindcompvclwinx;cxPivotGridOLAPRS28;FmxTeeUI;dxTileControlRS28;dxGanttControlRS28;cxGridEMFRS28;dxGDIPlusRS28;dxPScxPivotGridLnkRS28;dxPScxVGridLnkRS28;emsedge;bindcompfmx;dxPSdxDBOCLnkRS28;DBXFirebirdDriver;dxCoreRS28;cxPivotGridRS28;dxPSdxMapControlLnkRS28;dxPSdxPDFViewerLnkRS28;inetdb;dxSpreadSheetCoreRS28;cxSchedulerTreeBrowserRS28;dxPSCoreRS28;FireDACSqliteDriver;DbxClientDriver;dxSpreadSheetRS28;FireDACASADriver;dxTabbedMDIRS28;dxSkinsCoreRS28;Tee;soapmidas;dxBarRS28;vclactnband;TeeUI;dxADOServerModeRS28;fmxFireDAC;dbexpress;dxFireDACServerModeRS28;dxWizardControlRS28;FireDACInfxDriver;DBXMySQLDriver;VclSmp;inet;DataSnapCommon;dxServerModeRS28;dxPSdxLCLnkRS28;vcltouch;fmxase;cxTreeListRS28;dxBarDBNavRS28;dxdbtrRS28;DBXOdbcDriver;dbrtl;FireDACDBXDriver;FireDACOracleDriver;dxPSLnksRS28;fmxdae;TeeDB;dxPScxCommonRS28;dxPSdxChartControlLnkRS28;FireDACMSAccDriver;dxNavBarRS28;CustomIPTransport;FireDACMSSQLDriver;DataSnapIndy10ServerTransport;dxSpreadSheetReportDesignerRS28;DataSnapConnectors;dxFireDACEMFRS28;dxChartControlRS28;vcldsnap;DBXInterBaseDriver;dxComnRS28;FireDACMongoDBDriver;dxFlowChartDesignerRS28;IndySystem;dxSpreadSheetConditionalFormattingDialogsRS28;cxVerticalGridRS28;FireDACTDataDriver;dxOrgChartAdvancedCustomizeFormRS28;vcldb;dxDBXServerModeRS28;cxSchedulerRS28;dxPSDBTeeChartRS28;dxmdsRS28;dxRichEditControlRS28;dxRibbonRS28;cxSchedulerGridRS28;dxPsPrVwAdvRS28;dxFlowChartLayoutsRS28;dxPScxExtCommonRS28;dxPScxSchedulerLnkRS28;dxPSdxOCLnkRS28;dxdborRS28;vclFireDAC;dxRichEditControlCoreRS28;bindcomp;FireDACCommon;DataSnapServerMidas;FireDACODBCDriver;emsserverresource;dxADOEMFRS28;dxRibbonCustomizationFormRS28;IndyCore;RESTBackendComponents;cxPivotGridChartRS28;dxPScxGridLnkRS28;dxPSdxDBTVLnkRS28;dxBarExtDBItemsRS28;bindcompdbx;dxGaugeControlRS28;cxTreeListdxBarPopupMenuRS28;rtl;FireDACMySQLDriver;dxDockingRS28;dxPDFViewerRS28;FireDACADSDriver;dxFlowChartAdvancedCustomizeFormRS28;RESTComponents;dxPSTeeChartRS28;DBXSqliteDriver;vcl;IndyIPServer;dsnapxml;dsnapcon;DataSnapClient;DataSnapProviderClient;adortl;dxBarExtItemsRS28;cxSchedulerWebServiceStorageRS28;DBXSybaseASEDriver;dxtrmdRS28;dxorgcRS28;dxSpreadSheetCoreConditionalFormattingDialogsRS28;DBXDb2Driver;dxPSdxFCLnkRS28;dxPSdxGaugeControlLnkRS28;dxPSRichEditControlLnkRS28;cxGridRS28;dxSpellCheckerRS28;vclimg;DataSnapFireDAC;emsclientfiredac;FireDACPgDriver;FireDAC;FireDACDSDriver;inetdbxpress;xmlrtl;tethering;dxMapControlRS28;bindcompvcl;dsnap;dxEMFRS28;CloudService;DBXSybaseASADriver;DBXOracleDriver;FireDACDb2Driver;DBXInformixDriver;cxSchedulerRibbonStyleEventEditorRS28;dxPScxTLLnkRS28;fmxobj;bindcompvclsmp;DataSnapNativeClient;FMXTee;dxFlowChartRS28;DatasnapConnectorsFreePascal;soaprtl;soapserver;FireDACIBDriver;$(DCC_UsePackage)</DCC_UsePackage>
@@ -85,6 +86,8 @@
         <DCC_RemoteDebug>false</DCC_RemoteDebug>
         <AppEnableRuntimeThemes>true</AppEnableRuntimeThemes>
         <AppDPIAwarenessMode>PerMonitorV2</AppDPIAwarenessMode>
+        <VerInfo_IncludeVerInfo>true</VerInfo_IncludeVerInfo>
+        <VerInfo_Locale>1033</VerInfo_Locale>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Cfg_2)'!=''">
         <DCC_LocalDebugSymbols>false</DCC_LocalDebugSymbols>
@@ -100,7 +103,7 @@
         <DelphiCompile Include="$(MainSource)">
             <MainSource>MainSource</MainSource>
         </DelphiCompile>
-        <DCCReference Include="..\Main.pas">
+        <DCCReference Include="Main.pas">
             <Form>Form1</Form>
             <FormType>dfm</FormType>
         </DCCReference>
@@ -124,6 +127,12 @@
                 <Source>
                     <Source Name="MainSource">MyVPNGate.dpr</Source>
                 </Source>
+                <Excluded_Packages>
+                    <Excluded_Packages Name="$(BDSBIN)\bcboffice2k280.bpl">Embarcadero C++Builder Office 2000 Servers Package</Excluded_Packages>
+                    <Excluded_Packages Name="$(BDSBIN)\bcbofficexp280.bpl">Embarcadero C++Builder Office XP Servers Package</Excluded_Packages>
+                    <Excluded_Packages Name="$(BDSBIN)\dcloffice2k280.bpl">Microsoft Office 2000 Sample Automation Server Wrapper Components</Excluded_Packages>
+                    <Excluded_Packages Name="$(BDSBIN)\dclofficexp280.bpl">Microsoft Office XP Sample Automation Server Wrapper Components</Excluded_Packages>
+                </Excluded_Packages>
             </Delphi.Personality>
             <Deployment Version="3">
                 <DeployFile LocalName="Win32\Debug\MyVPNGate.exe" Configuration="Debug" Class="ProjectOutput">
@@ -933,10 +942,10 @@
                 </DeployClass>
                 <ProjectRoot Platform="OSX32" Name="$(PROJECTNAME).app"/>
                 <ProjectRoot Platform="OSX64" Name="$(PROJECTNAME).app"/>
-                <ProjectRoot Platform="Android64" Name="$(PROJECTNAME)"/>
+                <ProjectRoot Platform="Win32" Name="$(PROJECTNAME)"/>
                 <ProjectRoot Platform="OSXARM64" Name="$(PROJECTNAME).app"/>
                 <ProjectRoot Platform="Android" Name="$(PROJECTNAME)"/>
-                <ProjectRoot Platform="Win32" Name="$(PROJECTNAME)"/>
+                <ProjectRoot Platform="Android64" Name="$(PROJECTNAME)"/>
                 <ProjectRoot Platform="Win64" Name="$(PROJECTNAME)"/>
                 <ProjectRoot Platform="Linux64" Name="$(PROJECTNAME)"/>
                 <ProjectRoot Platform="iOSDevice32" Name="$(PROJECTNAME).app"/>

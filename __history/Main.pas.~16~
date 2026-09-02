@@ -8,7 +8,7 @@ uses
   IdTCPConnection, IdTCPClient, IdHTTP, Vcl.Grids, Vcl.StdCtrls, Vcl.ExtCtrls,
   Clipbrd, System.NetEncoding,
   System.Net.URLClient, System.Net.HttpClient, System.Net.HttpClientComponent,
-  Vcl.ComCtrls, System.ImageList, Vcl.ImgList;
+  Vcl.ComCtrls;
 
 type
   TForm1 = class; // Предварительное объявление
@@ -51,8 +51,6 @@ type
     StringGrid1: TStringGrid;
     NetHTTPClient1: TNetHTTPClient;
     ProgressBar1: TProgressBar;
-    ImageList1: TImageList;
-    StatusBar1: TStatusBar;
     procedure Button1Click(Sender: TObject);
     procedure Button2Click(Sender: TObject);
     procedure Button3Click(Sender: TObject);
@@ -66,7 +64,6 @@ type
     procedure StringGrid1Click(Sender: TObject);
   private
     procedure SaveListToFile;
-    procedure UpdateStats;
   public
     { Public declarations }
   end;
@@ -187,8 +184,6 @@ begin
     SL.Free;
     Columns.Free;
   end;
-
-  UpdateStats;
 end;
 
 procedure TForm1.FormResize(Sender: TObject);
@@ -281,7 +276,6 @@ begin
     TempList.Free;
   end;
   SaveListToFile;
-  UpdateStats;
 end;
 
 procedure TForm1.StringGrid1DrawCell(Sender: TObject; ACol, ARow: Integer;
@@ -323,27 +317,6 @@ begin
   StringGrid1.Canvas.TextRect(Rect, Rect.Left + 8, Rect.Top + 6, StringGrid1.Cells[ACol, ARow]);
 end;
 
-
-procedure TForm1.UpdateStats;
-var
-  i, Total, Working: Integer;
-begin
-  Total := 0;
-  Working := 0;
-
-  for i := 1 to StringGrid1.RowCount - 1 do
-  begin
-    if Trim(StringGrid1.Cells[0, i]) <> '' then
-    begin
-      Inc(Total);
-      if StringGrid1.Cells[3, i] = 'Работает!' then
-        Inc(Working);
-    end;
-  end;
-
-  StatusBar1.Panels[0].Text := 'Всего серверов: ' + IntToStr(Total);
-  StatusBar1.Panels[1].Text := 'Работает: ' + IntToStr(Working);
-end;
 
 procedure TForm1.StringGrid1Click(Sender: TObject);
 var
@@ -517,8 +490,6 @@ begin
   end;
 
   FForm.SaveListToFile;
-
-  FForm.UpdateStats;
 end;
 
 end.
