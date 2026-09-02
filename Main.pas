@@ -102,8 +102,9 @@ implementation
 {$R *.dfm}
 
 const
-  // Базовые (без стрелки сортировки) подписи сортируемых колонок: 1 - IP, 2 - Порт, 3 - Страна
-  ColHeaderBase: array[1..3] of string = ('IP', 'Порт', 'Страна');
+  // Базовые (без стрелки сортировки) подписи сортируемых колонок:
+  // 1 - IP, 2 - Порт, 3 - Страна, 4 - Пинг (мс), 5 - Скорость (Мбит/с)
+  ColHeaderBase: array[1..5] of string = ('IP', 'Порт', 'Страна', 'Пинг', 'Скорость');
 
 // Сравнение IP-адресов по числовым октетам, а не как обычных строк
 // (иначе, например, "10.0.0.1" оказался бы "меньше" "9.0.0.1")
@@ -141,9 +142,9 @@ end;
 
 procedure TTCPCheckThread.UpdateUI;
 begin
-  // Безопасно обновляем статус в 6-й колонке (индекс 5) для конкретной строки
+  // Безопасно обновляем статус в колонке "Статус" (индекс 7) для конкретной строки
   if FRowIndex < FForm.StringGrid1.RowCount then
-    FForm.StringGrid1.Cells[5, FRowIndex] := FStatus;
+    FForm.StringGrid1.Cells[7, FRowIndex] := FStatus;
 end;
 
 procedure TTCPCheckThread.Execute;
@@ -190,7 +191,7 @@ var
   FilePath: string;
   RowIdx: Integer;
 begin
-  StringGrid1.ColCount := 6;
+  StringGrid1.ColCount := 8;
   StringGrid1.FixedRows := 1;
   StringGrid1.RowCount := 2;
 
@@ -201,17 +202,19 @@ begin
 
   // Заголовки колонок
   StringGrid1.Cells[0, 0] := '№';
-  UpdateSortHeaders; // задаёт IP/Порт/Страна (колонки 1-3, сортируемые кликом по шапке)
-  StringGrid1.Cells[4, 0] := 'Протокол';
-  StringGrid1.Cells[5, 0] := 'Статус';
+  UpdateSortHeaders; // задаёт IP/Порт/Страна/Пинг/Скорость (колонки 1-5, сортируемые кликом по шапке)
+  StringGrid1.Cells[6, 0] := 'Протокол';
+  StringGrid1.Cells[7, 0] := 'Статус';
 
   // Ширина колонок
-  StringGrid1.ColWidths[0] := 45;
-  StringGrid1.ColWidths[1] := 140;
-  StringGrid1.ColWidths[2] := 70;
-  StringGrid1.ColWidths[3] := 130;
-  StringGrid1.ColWidths[4] := 80;
-  StringGrid1.ColWidths[5] := 150;
+  StringGrid1.ColWidths[0] := 40;
+  StringGrid1.ColWidths[1] := 130;
+  StringGrid1.ColWidths[2] := 60;
+  StringGrid1.ColWidths[3] := 100;
+  StringGrid1.ColWidths[4] := 70;
+  StringGrid1.ColWidths[5] := 100;
+  StringGrid1.ColWidths[6] := 80;
+  StringGrid1.ColWidths[7] := 150;
 
   StringGrid1.DoubleBuffered := True;
   StringGrid1.Options := StringGrid1.Options + [goRowSelect];
@@ -239,15 +242,17 @@ begin
     begin
       if Trim(SL[i]) = '' then Continue;
       Columns.DelimitedText := SL[i];
-      if Columns.Count >= 5 then
+      if Columns.Count >= 7 then
       begin
         Inc(RowIdx);
         StringGrid1.Cells[0, RowIdx] := IntToStr(RowIdx);
         StringGrid1.Cells[1, RowIdx] := Columns[0]; // IP
         StringGrid1.Cells[2, RowIdx] := Columns[1]; // Порт
         StringGrid1.Cells[3, RowIdx] := Columns[2]; // Страна
-        StringGrid1.Cells[4, RowIdx] := Columns[3]; // Протокол
-        StringGrid1.Cells[5, RowIdx] := Columns[4]; // Статус
+        StringGrid1.Cells[4, RowIdx] := Columns[3]; // Пинг
+        StringGrid1.Cells[5, RowIdx] := Columns[4]; // Скорость
+        StringGrid1.Cells[6, RowIdx] := Columns[5]; // Протокол
+        StringGrid1.Cells[7, RowIdx] := Columns[6]; // Статус
       end;
     end;
 
@@ -272,13 +277,14 @@ procedure TForm1.FormResize(Sender: TObject);
 var
   TotalWidth: Integer;
 begin
-  if Assigned(StringGrid1) and (StringGrid1.ColCount = 6) then
+  if Assigned(StringGrid1) and (StringGrid1.ColCount = 8) then
   begin
     TotalWidth := StringGrid1.ClientWidth - StringGrid1.ColWidths[0] -
                   StringGrid1.ColWidths[1] - StringGrid1.ColWidths[2] -
-                  StringGrid1.ColWidths[3] - StringGrid1.ColWidths[4] - 20;
+                  StringGrid1.ColWidths[3] - StringGrid1.ColWidths[4] -
+                  StringGrid1.ColWidths[5] - StringGrid1.ColWidths[6] - 20;
     if TotalWidth > 150 then
-      StringGrid1.ColWidths[5] := TotalWidth;
+      StringGrid1.ColWidths[7] := TotalWidth;
   end;
 end;
 
@@ -306,7 +312,7 @@ begin
   begin
     if Trim(StringGrid1.Cells[1, i]) <> '' then
     begin
-      StringGrid1.Cells[5, i] := 'Проверка...';
+      StringGrid1.Cells[7, i] := 'Проверка...';
       TTCPCheckThread.Create(Self, i, StringGrid1.Cells[1, i], StrToIntDef(StringGrid1.Cells[2, i], 443));
     end;
   end;
@@ -323,13 +329,15 @@ begin
   try
     for i := 1 to StringGrid1.RowCount - 1 do
     begin
-      if StringGrid1.Cells[5, i] = 'Работает!' then
+      if StringGrid1.Cells[7, i] = 'Работает!' then
       begin
         TempList.Add(StringGrid1.Cells[1, i] + ',' + // IP
                      StringGrid1.Cells[2, i] + ',' + // Порт
                      StringGrid1.Cells[3, i] + ',' + // Страна
-                     StringGrid1.Cells[4, i] + ',' + // Протокол
-                     StringGrid1.Cells[5, i]);       // Статус
+                     StringGrid1.Cells[4, i] + ',' + // Пинг
+                     StringGrid1.Cells[5, i] + ',' + // Скорость
+                     StringGrid1.Cells[6, i] + ',' + // Протокол
+                     StringGrid1.Cells[7, i]);       // Статус
       end;
     end;
 
@@ -344,6 +352,8 @@ begin
       StringGrid1.Cells[3, 1] := '';
       StringGrid1.Cells[4, 1] := '';
       StringGrid1.Cells[5, 1] := '';
+      StringGrid1.Cells[6, 1] := '';
+      StringGrid1.Cells[7, 1] := '';
       UpdateStats;
       SaveListToFile;
       Exit;
@@ -353,7 +363,7 @@ begin
     begin
       RIdx := i + 1;
       Cols := TempList[i].Split([',']);
-      if Length(Cols) >= 5 then
+      if Length(Cols) >= 7 then
       begin
         StringGrid1.Cells[0, RIdx] := IntToStr(RIdx);
         StringGrid1.Cells[1, RIdx] := Cols[0];
@@ -361,6 +371,8 @@ begin
         StringGrid1.Cells[3, RIdx] := Cols[2];
         StringGrid1.Cells[4, RIdx] := Cols[3];
         StringGrid1.Cells[5, RIdx] := Cols[4];
+        StringGrid1.Cells[6, RIdx] := Cols[5];
+        StringGrid1.Cells[7, RIdx] := Cols[6];
       end;
     end;
   finally
@@ -402,8 +414,8 @@ begin
 
   StringGrid1.Canvas.FillRect(Rect);
 
-  // Цвет текста для колонки статуса (индекс 5)
-  if ACol = 5 then
+  // Цвет текста для колонки статуса (индекс 7)
+  if ACol = 7 then
   begin
     if StringGrid1.Cells[ACol, ARow] = 'Работает!' then
       StringGrid1.Canvas.Font.Color := $0066CC33
@@ -436,7 +448,7 @@ begin
     if Trim(StringGrid1.Cells[1, i]) <> '' then
     begin
       Inc(Total);
-      if StringGrid1.Cells[5, i] = 'Работает!' then
+      if StringGrid1.Cells[7, i] = 'Работает!' then
         Inc(Working);
     end;
   end;
@@ -452,7 +464,7 @@ procedure TForm1.UpdateSortHeaders;
 var
   c: Integer;
 begin
-  for c := 1 to 3 do
+  for c := 1 to 5 do
   begin
     if c = FSortColumn then
     begin
@@ -473,15 +485,17 @@ var
   i, j: Integer;
   TempRow: TArray<string>;
   Swapped: Boolean;
-  Direction: Integer;
+  Direction, Cmp: Integer;
+  Va, Vb: Double;
 begin
   if Button <> mbLeft then Exit;
 
   StringGrid1.MouseToCell(X, Y, ACol, ARow);
 
-  // Клик по шапке (строка 0) для колонок IP (1), Порт (2), Страна (3).
-  // Повторный клик по той же колонке меняет направление сортировки.
-  if (ARow = 0) and (ACol >= 1) and (ACol <= 3) then
+  // Клик по шапке (строка 0) для колонок IP (1), Порт (2), Страна (3),
+  // Пинг (4) и Скорость (5). Повторный клик по той же колонке меняет
+  // направление сортировки.
+  if (ARow = 0) and (ACol >= 1) and (ACol <= 5) then
   begin
     if FSortColumn = ACol then
       FSortAscending := not FSortAscending
@@ -504,47 +518,33 @@ begin
       begin
         if Trim(StringGrid1.Cells[1, i]) = '' then Break;
 
-        // Для порта (колонка 2) — числовое сравнение, для IP (1) — по октетам,
-        // для страны (3) — обычное текстовое сравнение
-        if ACol = 2 then
-        begin
-          if (StrToIntDef(StringGrid1.Cells[ACol, i], 0) -
-              StrToIntDef(StringGrid1.Cells[ACol, i + 1], 0)) * Direction > 0 then
-          begin
-            for j := 0 to StringGrid1.ColCount - 1 do
+        // IP (1) — сравнение по октетам; Порт (2) и Пинг (4) — целые числа;
+        // Скорость (5) — дробное число; Страна (3) — обычный текст
+        case ACol of
+          1: Cmp := CompareIP(StringGrid1.Cells[ACol, i], StringGrid1.Cells[ACol, i + 1]);
+          2, 4: Cmp := StrToIntDef(StringGrid1.Cells[ACol, i], 0) -
+                       StrToIntDef(StringGrid1.Cells[ACol, i + 1], 0);
+          5:
             begin
-              TempRow[j] := StringGrid1.Cells[j, i];
-              StringGrid1.Cells[j, i] := StringGrid1.Cells[j, i + 1];
-              StringGrid1.Cells[j, i + 1] := TempRow[j];
+              Va := StrToFloatDef(StringGrid1.Cells[ACol, i], 0);
+              Vb := StrToFloatDef(StringGrid1.Cells[ACol, i + 1], 0);
+              if Va > Vb then Cmp := 1
+              else if Va < Vb then Cmp := -1
+              else Cmp := 0;
             end;
-            Swapped := True;
-          end;
-        end
-        else if ACol = 1 then
-        begin
-          if CompareIP(StringGrid1.Cells[ACol, i], StringGrid1.Cells[ACol, i + 1]) * Direction > 0 then
-          begin
-            for j := 0 to StringGrid1.ColCount - 1 do
-            begin
-              TempRow[j] := StringGrid1.Cells[j, i];
-              StringGrid1.Cells[j, i] := StringGrid1.Cells[j, i + 1];
-              StringGrid1.Cells[j, i + 1] := TempRow[j];
-            end;
-            Swapped := True;
-          end;
-        end
         else
+          Cmp := AnsiCompareText(StringGrid1.Cells[ACol, i], StringGrid1.Cells[ACol, i + 1]);
+        end;
+
+        if Cmp * Direction > 0 then
         begin
-          if AnsiCompareText(StringGrid1.Cells[ACol, i], StringGrid1.Cells[ACol, i + 1]) * Direction > 0 then
+          for j := 0 to StringGrid1.ColCount - 1 do
           begin
-            for j := 0 to StringGrid1.ColCount - 1 do
-            begin
-              TempRow[j] := StringGrid1.Cells[j, i];
-              StringGrid1.Cells[j, i] := StringGrid1.Cells[j, i + 1];
-              StringGrid1.Cells[j, i + 1] := TempRow[j];
-            end;
-            Swapped := True;
+            TempRow[j] := StringGrid1.Cells[j, i];
+            StringGrid1.Cells[j, i] := StringGrid1.Cells[j, i + 1];
+            StringGrid1.Cells[j, i + 1] := TempRow[j];
           end;
+          Swapped := True;
         end;
       end;
     until not Swapped;
@@ -605,7 +605,7 @@ begin
   if (FContextRow > 0) and (FContextRow < StringGrid1.RowCount) and
      (Trim(StringGrid1.Cells[1, FContextRow]) <> '') then
   begin
-    StringGrid1.Cells[5, FContextRow] := 'Проверка...';
+    StringGrid1.Cells[7, FContextRow] := 'Проверка...';
     TTCPCheckThread.Create(Self, FContextRow, StringGrid1.Cells[1, FContextRow],
       StrToIntDef(StringGrid1.Cells[2, FContextRow], 443));
   end;
@@ -670,8 +670,10 @@ begin
         SL.Add(StringGrid1.Cells[1, i] + ',' + // IP
                StringGrid1.Cells[2, i] + ',' + // Порт
                StringGrid1.Cells[3, i] + ',' + // Страна
-               StringGrid1.Cells[4, i] + ',' + // Протокол
-               StringGrid1.Cells[5, i]);       // Статус
+               StringGrid1.Cells[4, i] + ',' + // Пинг
+               StringGrid1.Cells[5, i] + ',' + // Скорость
+               StringGrid1.Cells[6, i] + ',' + // Протокол
+               StringGrid1.Cells[7, i]);       // Статус
       end;
     end;
     SL.SaveToFile(ExtractFilePath(ParamStr(0)) + 'servers.txt');
@@ -702,9 +704,10 @@ end;
 procedure TUpdateThread.Execute;
 var
   Client: TNetHTTPClient;
-  CSVData, OVPN, PortStr, Country: string;
+  CSVData, OVPN, PortStr, Country, PingStr, SpeedStr: string;
   Lines, Columns, OVPNLines: TStringList;
   i, j, P: Integer;
+  SpeedBps: Int64;
 begin
   Client := TNetHTTPClient.Create(nil);
   Lines := TStringList.Create;
@@ -741,6 +744,20 @@ begin
           if Columns.Count > 5 then
             Country := Columns[5]; // Название страны
 
+          // Пинг (мс) — колонка 3 исходного CSV VPN Gate
+          PingStr := '-';
+          if (Columns.Count > 3) and (Trim(Columns[3]) <> '') then
+            PingStr := Trim(Columns[3]);
+
+          // Скорость (колонка 4, бит/с) — переводим в Мбит/с для удобства чтения
+          SpeedStr := '-';
+          if Columns.Count > 4 then
+          begin
+            SpeedBps := StrToInt64Def(Trim(Columns[4]), 0);
+            if SpeedBps > 0 then
+              SpeedStr := FormatFloat('0.0', SpeedBps / 1000000);
+          end;
+
           OVPN := '';
           try
             OVPN := TNetEncoding.Base64.Decode(Columns[14]);
@@ -765,8 +782,9 @@ begin
           except
           end;
 
-          // Сохраняем во временный список: IP, Порт, Страна, Протокол, Статус
-          FTempServers.Add(Columns[1] + ',' + PortStr + ',' + Country + ',TCP,Ожидание');
+          // Сохраняем во временный список: IP, Порт, Страна, Пинг, Скорость, Протокол, Статус
+          FTempServers.Add(Columns[1] + ',' + PortStr + ',' + Country + ',' +
+            PingStr + ',' + SpeedStr + ',TCP,Ожидание');
 
           // Сохраняем декодированный OpenVPN-конфиг для последующего экспорта в .ovpn
           if (OVPN <> '') and (Trim(Columns[1]) <> '') then
@@ -811,14 +829,16 @@ begin
   begin
     RowIdx := i + 1;
     Cols := FTempServers[i].Split([',']);
-    if Length(Cols) >= 5 then
+    if Length(Cols) >= 7 then
     begin
       FForm.StringGrid1.Cells[0, RowIdx] := IntToStr(RowIdx); // №
       FForm.StringGrid1.Cells[1, RowIdx] := Cols[0];          // IP
       FForm.StringGrid1.Cells[2, RowIdx] := Cols[1];          // Порт
       FForm.StringGrid1.Cells[3, RowIdx] := Cols[2];          // Страна
-      FForm.StringGrid1.Cells[4, RowIdx] := Cols[3];          // Протокол
-      FForm.StringGrid1.Cells[5, RowIdx] := Cols[4];          // Статус
+      FForm.StringGrid1.Cells[4, RowIdx] := Cols[3];          // Пинг
+      FForm.StringGrid1.Cells[5, RowIdx] := Cols[4];          // Скорость
+      FForm.StringGrid1.Cells[6, RowIdx] := Cols[5];          // Протокол
+      FForm.StringGrid1.Cells[7, RowIdx] := Cols[6];          // Статус
     end;
   end;
 
