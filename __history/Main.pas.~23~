@@ -8,7 +8,7 @@ uses
   IdTCPConnection, IdTCPClient, IdHTTP, Vcl.Grids, Vcl.StdCtrls, Vcl.ExtCtrls,
   Clipbrd, System.NetEncoding,
   System.Net.URLClient, System.Net.HttpClient, System.Net.HttpClientComponent,
-  Vcl.ComCtrls;
+  Vcl.ComCtrls, System.ImageList, Vcl.ImgList;
 
 type
   TForm1 = class; // Предварительное объявление
@@ -28,7 +28,7 @@ type
     constructor Create(AForm: TForm1; ARowIndex: Integer; AIP: string; APort: Integer);
   end;
 
- // Фоновый поток для скачивания и парсинга серверов
+  // Фоновый поток для скачивания и парсинга серверов
   TUpdateThread = class(TThread)
   private
     FForm: TForm1;
@@ -51,6 +51,8 @@ type
     StringGrid1: TStringGrid;
     NetHTTPClient1: TNetHTTPClient;
     ProgressBar1: TProgressBar;
+    ImageList1: TImageList;
+    StatusBar1: TStatusBar;
     procedure Button1Click(Sender: TObject);
     procedure Button2Click(Sender: TObject);
     procedure Button3Click(Sender: TObject);
@@ -61,9 +63,12 @@ type
     procedure StringGrid1DrawCell(Sender: TObject; ACol, ARow: Integer;
       Rect: TRect; State: TGridDrawState);
     procedure FormResize(Sender: TObject);
-    procedure StringGrid1Click(Sender: TObject);
+    procedure StringGrid1MouseDown(Sender: TObject; Button: TMouseButton;
+      Shift: TShiftState; X, Y: Integer);
+    procedure StringGrid1DblClick(Sender: TObject);
   private
     procedure SaveListToFile;
+    procedure UpdateStats;
   public
     { Public declarations }
   end;
@@ -89,9 +94,9 @@ end;
 
 procedure TTCPCheckThread.UpdateUI;
 begin
-  // Безопасно обновляем статус в нужной строке таблицы из главного потока
+  // Безопасно обновляем статус в 5-й колонке (индекс 5) для конкретной строки
   if FRowIndex < FForm.StringGrid1.RowCount then
-    FForm.StringGrid1.Cells[3, FRowIndex] := FStatus;
+    FForm.StringGrid1.Cells[5, FRowIndex] := FStatus;
 end;
 
 procedure TTCPCheckThread.Execute;
@@ -130,20 +135,25 @@ var
   FilePath: string;
   RowIdx: Integer;
 begin
-  StringGrid1.ColCount := 4;
+  StringGrid1.ColCount := 6;
   StringGrid1.FixedRows := 1;
-  StringGrid1.RowCount := 2; // Минимум 2 строки (шапка + 1 пустая)
+  StringGrid1.RowCount := 2;
 
   // Заголовки колонок
-  StringGrid1.Cells[0, 0] := 'IP';
-  StringGrid1.Cells[1, 0] := 'Порт';
-  StringGrid1.Cells[2, 0] := 'Протокол';
-  StringGrid1.Cells[3, 0] := 'Статус';
+  StringGrid1.Cells[0, 0] := '№';
+  StringGrid1.Cells[1, 0] := 'IP';
+  StringGrid1.Cells[2, 0] := 'Порт';
+  StringGrid1.Cells[3, 0] := 'Страна';
+  StringGrid1.Cells[4, 0] := 'Протокол';
+  StringGrid1.Cells[5, 0] := 'Статус';
 
-  StringGrid1.ColWidths[0] := 160;
-  StringGrid1.ColWidths[1] := 80;
-  StringGrid1.ColWidths[2] := 90;
-  StringGrid1.ColWidths[3] := 200;
+  // Ширина колонок
+  StringGrid1.ColWidths[0] := 45;
+  StringGrid1.ColWidths[1] := 140;
+  StringGrid1.ColWidths[2] := 70;
+  StringGrid1.ColWidths[3] := 130;
+  StringGrid1.ColWidths[4] := 80;
+  StringGrid1.ColWidths[5] := 150;
 
   StringGrid1.DoubleBuffered := True;
   StringGrid1.Options := StringGrid1.Options + [goRowSelect];
@@ -160,50 +170,64 @@ begin
   try
     SL.LoadFromFile(FilePath);
     if SL.Count > 0 then
-      StringGrid1.RowCount := SL.Count + 1; // Устанавливаем точный размер под файл
+      StringGrid1.RowCount := SL.Count + 1;
 
     RowIdx := 0;
     for i := 0 to SL.Count - 1 do
     begin
       if Trim(SL[i]) = '' then Continue;
       Columns.DelimitedText := SL[i];
-      if Columns.Count >= 4 then
+      if Columns.Count >= 5 then
       begin
         Inc(RowIdx);
-        StringGrid1.Cells[0, RowIdx] := Columns[0];
-        StringGrid1.Cells[1, RowIdx] := Columns[1];
-        StringGrid1.Cells[2, RowIdx] := Columns[2];
-        StringGrid1.Cells[3, RowIdx] := Columns[3];
+        StringGrid1.Cells[0, RowIdx] := IntToStr(RowIdx);
+        StringGrid1.Cells[1, RowIdx] := Columns[0]; // IP
+        StringGrid1.Cells[2, RowIdx] := Columns[1]; // Порт
+        StringGrid1.Cells[3, RowIdx] := Columns[2]; // Страна
+        StringGrid1.Cells[4, RowIdx] := Columns[3]; // Протокол
+        StringGrid1.Cells[5, RowIdx] := Columns[4]; // Статус
       end;
     end;
 
-    // Если реальных строк оказалось меньше
     if RowIdx > 0 then
-      StringGrid1.RowCount := RowIdx + 1;
+      StringGrid1.RowCount := RowIdx + 1
+    else
+      StringGrid1.RowCount := 2;
   finally
     SL.Free;
     Columns.Free;
   end;
+
+  UpdateStats;
 end;
 
 procedure TForm1.FormResize(Sender: TObject);
 var
   TotalWidth: Integer;
 begin
-  // Автоматически растягиваем последнюю колонку (Статус) по ширине окна
-  if Assigned(StringGrid1) and (StringGrid1.ColCount = 4) then
+  if Assigned(StringGrid1) and (StringGrid1.ColCount = 6) then
   begin
     TotalWidth := StringGrid1.ClientWidth - StringGrid1.ColWidths[0] -
-                  StringGrid1.ColWidths[1] - StringGrid1.ColWidths[2] - 10;
+                  StringGrid1.ColWidths[1] - StringGrid1.ColWidths[2] -
+                  StringGrid1.ColWidths[3] - StringGrid1.ColWidths[4] - 20;
     if TotalWidth > 150 then
-      StringGrid1.ColWidths[3] := TotalWidth;
+      StringGrid1.ColWidths[5] := TotalWidth;
   end;
 end;
 
 procedure TForm1.Button1Click(Sender: TObject);
 begin
+  // Прячем кнопку, чтобы исключить повторные нажатия
+  Button1.Visible := False;
+
+  // Показываем прогресс-бар ровно на месте кнопки
+  ProgressBar1.Left := Button1.Left;
+  ProgressBar1.Top := Button1.Top;
+  ProgressBar1.Width := Button1.Width;
+  ProgressBar1.Height := Button1.Height;
   ProgressBar1.Visible := True;
-  // Запускаем фоновую загрузку — интерфейс больше не зависает!
+
+  // Запускаем фоновую загрузку
   TUpdateThread.Create(Self);
 end;
 
@@ -213,8 +237,11 @@ var
 begin
   for i := 1 to StringGrid1.RowCount - 1 do
   begin
-    StringGrid1.Cells[3, i] := 'Проверка...';
-    TTCPCheckThread.Create(Self, i, StringGrid1.Cells[0, i], StrToIntDef(StringGrid1.Cells[1, i], 443));
+    if Trim(StringGrid1.Cells[1, i]) <> '' then
+    begin
+      StringGrid1.Cells[5, i] := 'Проверка...';
+      TTCPCheckThread.Create(Self, i, StringGrid1.Cells[1, i], StrToIntDef(StringGrid1.Cells[2, i], 443));
+    end;
   end;
 end;
 
@@ -229,16 +256,16 @@ begin
   try
     for i := 1 to StringGrid1.RowCount - 1 do
     begin
-      if StringGrid1.Cells[3, i] = 'Работает!' then
+      if StringGrid1.Cells[5, i] = 'Работает!' then
       begin
-        TempList.Add(StringGrid1.Cells[0, i] + ',' +
-                     StringGrid1.Cells[1, i] + ',' +
-                     StringGrid1.Cells[2, i] + ',' +
-                     StringGrid1.Cells[3, i]);
+        TempList.Add(StringGrid1.Cells[1, i] + ',' + // IP
+                     StringGrid1.Cells[2, i] + ',' + // Порт
+                     StringGrid1.Cells[3, i] + ',' + // Страна
+                     StringGrid1.Cells[4, i] + ',' + // Протокол
+                     StringGrid1.Cells[5, i]);       // Статус
       end;
     end;
 
-    // Безопасный размер: если рабочих нет, оставляем 2 строки (пустую), чтобы не вызвать ошибку
     if TempList.Count > 0 then
       StringGrid1.RowCount := TempList.Count + 1
     else
@@ -248,6 +275,10 @@ begin
       StringGrid1.Cells[1, 1] := '';
       StringGrid1.Cells[2, 1] := '';
       StringGrid1.Cells[3, 1] := '';
+      StringGrid1.Cells[4, 1] := '';
+      StringGrid1.Cells[5, 1] := '';
+      UpdateStats;
+      SaveListToFile;
       Exit;
     end;
 
@@ -255,45 +286,64 @@ begin
     begin
       RIdx := i + 1;
       Cols := TempList[i].Split([',']);
-      if Length(Cols) >= 4 then
+      if Length(Cols) >= 5 then
       begin
-        StringGrid1.Cells[0, RIdx] := Cols[0];
-        StringGrid1.Cells[1, RIdx] := Cols[1];
-        StringGrid1.Cells[2, RIdx] := Cols[2];
-        StringGrid1.Cells[3, RIdx] := Cols[3];
+        StringGrid1.Cells[0, RIdx] := IntToStr(RIdx);
+        StringGrid1.Cells[1, RIdx] := Cols[0];
+        StringGrid1.Cells[2, RIdx] := Cols[1];
+        StringGrid1.Cells[3, RIdx] := Cols[2];
+        StringGrid1.Cells[4, RIdx] := Cols[3];
+        StringGrid1.Cells[5, RIdx] := Cols[4];
       end;
     end;
   finally
     TempList.Free;
   end;
   SaveListToFile;
+  UpdateStats;
+end;
+
+procedure TForm1.StringGrid1DblClick(Sender: TObject);
+var
+  IP, FullAddress: string;
+  Row: Integer;
+begin
+  Row := StringGrid1.Row;
+  if Row > 0 then
+  begin
+    IP := StringGrid1.Cells[1, Row]; // IP находится во 2-й колонке (индекс 1)
+    if Trim(IP) <> '' then
+    begin
+      FullAddress := IP;
+      Clipboard.AsText := FullAddress;
+      ShowMessage('Адрес ' + FullAddress + ' скопирован в буфер обмена!');
+    end;
+  end;
 end;
 
 procedure TForm1.StringGrid1DrawCell(Sender: TObject; ACol, ARow: Integer;
   Rect: TRect; State: TGridDrawState);
 begin
-  // Шапку таблицы не трогаем — оставляем под стиль
   if ARow = 0 then Exit;
 
-  // Окрашиваем фон строк (эффект «зебры» и подсветка выделенной строки)
   if gdSelected in State then
-    StringGrid1.Canvas.Brush.Color := $003A3A3A // Цвет активной строки
+    StringGrid1.Canvas.Brush.Color := $003A3A3A
   else if ARow mod 2 = 0 then
-    StringGrid1.Canvas.Brush.Color := $00252525 // Четная строка (чуть светлее)
+    StringGrid1.Canvas.Brush.Color := $00252525
   else
-    StringGrid1.Canvas.Brush.Color := $001E1E1E; // Нечетная строка (основной фон)
+    StringGrid1.Canvas.Brush.Color := $001E1E1E;
 
   StringGrid1.Canvas.FillRect(Rect);
 
-  // Настройка цвета текста для разных колонок и статусов
-  if ACol = 3 then
+  // Цвет текста для колонки статуса (индекс 5)
+  if ACol = 5 then
   begin
     if StringGrid1.Cells[ACol, ARow] = 'Работает!' then
-      StringGrid1.Canvas.Font.Color := $0066CC33 // Зеленый
+      StringGrid1.Canvas.Font.Color := $0066CC33
     else if StringGrid1.Cells[ACol, ARow] = 'Недоступен' then
-      StringGrid1.Canvas.Font.Color := $005555FF // Красный
+      StringGrid1.Canvas.Font.Color := $005555FF
     else if StringGrid1.Cells[ACol, ARow] = 'Проверка...' then
-      StringGrid1.Canvas.Font.Color := $0033CCFF // Голубой
+      StringGrid1.Canvas.Font.Color := $0033CCFF
     else
       StringGrid1.Canvas.Font.Color := clSilver;
     StringGrid1.Canvas.Font.Style := [fsBold];
@@ -304,24 +354,91 @@ begin
     StringGrid1.Canvas.Font.Style := [];
   end;
 
-  // Выводим текст с небольшим отступом от границ ячейки
   StringGrid1.Canvas.TextRect(Rect, Rect.Left + 8, Rect.Top + 6, StringGrid1.Cells[ACol, ARow]);
 end;
 
-
-procedure TForm1.StringGrid1Click(Sender: TObject);
+procedure TForm1.UpdateStats;
 var
-  IP, FullAddress: string;
-  Row: Integer;
+  i, Total, Working: Integer;
 begin
-  Row := StringGrid1.Row;
-  if Row > 0 then
-  begin
-    IP := StringGrid1.Cells[0, Row];
-    FullAddress := IP;
+  Total := 0;
+  Working := 0;
 
-    Clipboard.AsText := FullAddress;
-    ShowMessage('Адрес ' + FullAddress + ' скопирован в буфер обмена!');
+  for i := 1 to StringGrid1.RowCount - 1 do
+  begin
+    if Trim(StringGrid1.Cells[1, i]) <> '' then
+    begin
+      Inc(Total);
+      if StringGrid1.Cells[5, i] = 'Работает!' then
+        Inc(Working);
+    end;
+  end;
+
+  StatusBar1.Panels[0].Text := 'Всего серверов: ' + IntToStr(Total);
+  StatusBar1.Panels[1].Text := 'Работает: ' + IntToStr(Working);
+end;
+
+
+
+procedure TForm1.StringGrid1MouseDown(Sender: TObject; Button: TMouseButton;
+  Shift: TShiftState; X, Y: Integer);
+var
+  ACol, ARow: Integer;
+  i, j: Integer;
+  TempRow: TArray<string>;
+  Swapped: Boolean;
+begin
+  StringGrid1.MouseToCell(X, Y, ACol, ARow);
+
+  // Клик по шапке (строка 0) для колонок IP (1), Порт (2), Страна (3)
+  if (ARow = 0) and (ACol >= 1) and (ACol <= 3) then
+  begin
+    SetLength(TempRow, StringGrid1.ColCount);
+
+    repeat
+      Swapped := False;
+      for i := 1 to StringGrid1.RowCount - 2 do
+      begin
+        if Trim(StringGrid1.Cells[1, i]) = '' then Break;
+
+        // Для порта (колонка 2) используем числовое сравнение
+        if ACol = 2 then
+        begin
+          if StrToIntDef(StringGrid1.Cells[ACol, i], 0) > StrToIntDef(StringGrid1.Cells[ACol, i + 1], 0) then
+          begin
+            for j := 0 to StringGrid1.ColCount - 1 do
+            begin
+              TempRow[j] := StringGrid1.Cells[j, i];
+              StringGrid1.Cells[j, i] := StringGrid1.Cells[j, i + 1];
+              StringGrid1.Cells[j, i + 1] := TempRow[j];
+            end;
+            Swapped := True;
+          end;
+        end
+        else
+        begin
+          if AnsiCompareText(StringGrid1.Cells[ACol, i], StringGrid1.Cells[ACol, i + 1]) > 0 then
+          begin
+            for j := 0 to StringGrid1.ColCount - 1 do
+            begin
+              TempRow[j] := StringGrid1.Cells[j, i];
+              StringGrid1.Cells[j, i] := StringGrid1.Cells[j, i + 1];
+              StringGrid1.Cells[j, i + 1] := TempRow[j];
+            end;
+            Swapped := True;
+          end;
+        end;
+      end;
+    until not Swapped;
+
+    // Перенумеровываем колонку № (индекс 0) после сортировки
+    for i := 1 to StringGrid1.RowCount - 1 do
+    begin
+      if Trim(StringGrid1.Cells[1, i]) <> '' then
+        StringGrid1.Cells[0, i] := IntToStr(i)
+      else
+        StringGrid1.Cells[0, i] := '';
+    end;
   end;
 end;
 
@@ -341,10 +458,14 @@ begin
   try
     for i := 1 to StringGrid1.RowCount - 1 do
     begin
-      SL.Add(StringGrid1.Cells[0, i] + ',' +
-             StringGrid1.Cells[1, i] + ',' +
-             StringGrid1.Cells[2, i] + ',' +
-             StringGrid1.Cells[3, i]);
+      if Trim(StringGrid1.Cells[1, i]) <> '' then
+      begin
+        SL.Add(StringGrid1.Cells[1, i] + ',' + // IP
+               StringGrid1.Cells[2, i] + ',' + // Порт
+               StringGrid1.Cells[3, i] + ',' + // Страна
+               StringGrid1.Cells[4, i] + ',' + // Протокол
+               StringGrid1.Cells[5, i]);       // Статус
+      end;
     end;
     SL.SaveToFile(ExtractFilePath(ParamStr(0)) + 'servers.txt');
   finally
@@ -359,8 +480,8 @@ begin
   FForm := AForm;
   FTempServers := TStringList.Create;
   FSuccess := False;
-  inherited Create(False); // Запускаем поток сразу
-  FreeOnTerminate := True; // Автоудаление после завершения
+  inherited Create(False);
+  FreeOnTerminate := True;
 end;
 
 destructor TUpdateThread.Destroy;
@@ -372,7 +493,7 @@ end;
 procedure TUpdateThread.Execute;
 var
   Client: TNetHTTPClient;
-  CSVData, OVPN, PortStr: string;
+  CSVData, OVPN, PortStr, Country: string;
   Lines, Columns, OVPNLines: TStringList;
   i, j, P: Integer;
 begin
@@ -408,6 +529,10 @@ begin
         if Columns.Count > 14 then
         begin
           PortStr := '443';
+          Country := 'Unknown';
+          if Columns.Count > 5 then
+            Country := Columns[5]; // Название страны
+
           try
             OVPN := TNetEncoding.Base64.Decode(Columns[14]);
             OVPNLines.Text := OVPN;
@@ -431,7 +556,8 @@ begin
           except
           end;
 
-          FTempServers.Add(Columns[1] + ',' + PortStr + ',TCP,Ожидание');
+          // Сохраняем во временный список: IP, Порт, Страна, Протокол, Статус
+          FTempServers.Add(Columns[1] + ',' + PortStr + ',' + Country + ',TCP,Ожидание');
         end;
       end;
     end;
@@ -442,7 +568,6 @@ begin
     OVPNLines.Free;
   end;
 
-  // Безопасно передаем данные в главный поток для отрисовки
   Synchronize(UpdateUI);
 end;
 
@@ -452,8 +577,9 @@ var
   Cols: TArray<string>;
   RowIdx: Integer;
 begin
-  // Скрываем прогресс-бар
+  // Возвращаем кнопку на место и скрываем прогресс-бар
   FForm.ProgressBar1.Visible := False;
+  FForm.Button1.Visible := True;
 
   if not FSuccess then
   begin
@@ -470,16 +596,19 @@ begin
   begin
     RowIdx := i + 1;
     Cols := FTempServers[i].Split([',']);
-    if Length(Cols) >= 4 then
+    if Length(Cols) >= 5 then
     begin
-      FForm.StringGrid1.Cells[0, RowIdx] := Cols[0];
-      FForm.StringGrid1.Cells[1, RowIdx] := Cols[1];
-      FForm.StringGrid1.Cells[2, RowIdx] := Cols[2];
-      FForm.StringGrid1.Cells[3, RowIdx] := Cols[3];
+      FForm.StringGrid1.Cells[0, RowIdx] := IntToStr(RowIdx); // №
+      FForm.StringGrid1.Cells[1, RowIdx] := Cols[0];          // IP
+      FForm.StringGrid1.Cells[2, RowIdx] := Cols[1];          // Порт
+      FForm.StringGrid1.Cells[3, RowIdx] := Cols[2];          // Страна
+      FForm.StringGrid1.Cells[4, RowIdx] := Cols[3];          // Протокол
+      FForm.StringGrid1.Cells[5, RowIdx] := Cols[4];          // Статус
     end;
   end;
 
   FForm.SaveListToFile;
+  FForm.UpdateStats;
 end;
 
 end.
