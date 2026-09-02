@@ -1,4 +1,4 @@
-п»їunit Main;
+unit Main;
 
 interface
 
@@ -11,9 +11,9 @@ uses
   Vcl.ComCtrls, System.ImageList, Vcl.ImgList;
 
 type
-  TForm1 = class; // РџСЂРµРґРІР°СЂРёС‚РµР»СЊРЅРѕРµ РѕР±СЉСЏРІР»РµРЅРёРµ
+  TForm1 = class; // Предварительное объявление
 
-  // РџРѕС‚РѕРє РїСЂРѕРІРµСЂРєРё TCP-СЃРѕРµРґРёРЅРµРЅРёСЏ СЃ РїСЂРёРІСЏР·РєРѕР№ Рє СЃС‚СЂРѕРєРµ StringGrid
+  // Поток проверки TCP-соединения с привязкой к строке StringGrid
   TTCPCheckThread = class(TThread)
   private
     FForm: TForm1;
@@ -28,7 +28,7 @@ type
     constructor Create(AForm: TForm1; ARowIndex: Integer; AIP: string; APort: Integer);
   end;
 
-  // Р¤РѕРЅРѕРІС‹Р№ РїРѕС‚РѕРє РґР»СЏ СЃРєР°С‡РёРІР°РЅРёСЏ Рё РїР°СЂСЃРёРЅРіР° СЃРµСЂРІРµСЂРѕРІ
+  // Фоновый поток для скачивания и парсинга серверов
   TUpdateThread = class(TThread)
   private
     FForm: TForm1;
@@ -63,9 +63,9 @@ type
     procedure StringGrid1DrawCell(Sender: TObject; ACol, ARow: Integer;
       Rect: TRect; State: TGridDrawState);
     procedure FormResize(Sender: TObject);
+    procedure StringGrid1Click(Sender: TObject);
     procedure StringGrid1MouseDown(Sender: TObject; Button: TMouseButton;
       Shift: TShiftState; X, Y: Integer);
-    procedure StringGrid1DblClick(Sender: TObject);
   private
     procedure SaveListToFile;
     procedure UpdateStats;
@@ -94,7 +94,7 @@ end;
 
 procedure TTCPCheckThread.UpdateUI;
 begin
-  // Р‘РµР·РѕРїР°СЃРЅРѕ РѕР±РЅРѕРІР»СЏРµРј СЃС‚Р°С‚СѓСЃ РІ 5-Р№ РєРѕР»РѕРЅРєРµ (РёРЅРґРµРєСЃ 5) РґР»СЏ РєРѕРЅРєСЂРµС‚РЅРѕР№ СЃС‚СЂРѕРєРё
+  // Безопасно обновляем статус в 5-й колонке (индекс 5) для конкретной строки
   if FRowIndex < FForm.StringGrid1.RowCount then
     FForm.StringGrid1.Cells[5, FRowIndex] := FStatus;
 end;
@@ -111,9 +111,9 @@ begin
     TCPClient.ReadTimeout := 2000;
     try
       TCPClient.Connect;
-      FStatus := 'Р Р°Р±РѕС‚Р°РµС‚!';
+      FStatus := 'Работает!';
     except
-      FStatus := 'РќРµРґРѕСЃС‚СѓРїРµРЅ';
+      FStatus := 'Недоступен';
     end;
     try
       if TCPClient.Connected then
@@ -139,15 +139,15 @@ begin
   StringGrid1.FixedRows := 1;
   StringGrid1.RowCount := 2;
 
-  // Р—Р°РіРѕР»РѕРІРєРё РєРѕР»РѕРЅРѕРє
-  StringGrid1.Cells[0, 0] := 'в„–';
+  // Заголовки колонок
+  StringGrid1.Cells[0, 0] := '№';
   StringGrid1.Cells[1, 0] := 'IP';
-  StringGrid1.Cells[2, 0] := 'РџРѕСЂС‚';
-  StringGrid1.Cells[3, 0] := 'РЎС‚СЂР°РЅР°';
-  StringGrid1.Cells[4, 0] := 'РџСЂРѕС‚РѕРєРѕР»';
-  StringGrid1.Cells[5, 0] := 'РЎС‚Р°С‚СѓСЃ';
+  StringGrid1.Cells[2, 0] := 'Порт';
+  StringGrid1.Cells[3, 0] := 'Страна';
+  StringGrid1.Cells[4, 0] := 'Протокол';
+  StringGrid1.Cells[5, 0] := 'Статус';
 
-  // РЁРёСЂРёРЅР° РєРѕР»РѕРЅРѕРє
+  // Ширина колонок
   StringGrid1.ColWidths[0] := 45;
   StringGrid1.ColWidths[1] := 140;
   StringGrid1.ColWidths[2] := 70;
@@ -182,10 +182,10 @@ begin
         Inc(RowIdx);
         StringGrid1.Cells[0, RowIdx] := IntToStr(RowIdx);
         StringGrid1.Cells[1, RowIdx] := Columns[0]; // IP
-        StringGrid1.Cells[2, RowIdx] := Columns[1]; // РџРѕСЂС‚
-        StringGrid1.Cells[3, RowIdx] := Columns[2]; // РЎС‚СЂР°РЅР°
-        StringGrid1.Cells[4, RowIdx] := Columns[3]; // РџСЂРѕС‚РѕРєРѕР»
-        StringGrid1.Cells[5, RowIdx] := Columns[4]; // РЎС‚Р°С‚СѓСЃ
+        StringGrid1.Cells[2, RowIdx] := Columns[1]; // Порт
+        StringGrid1.Cells[3, RowIdx] := Columns[2]; // Страна
+        StringGrid1.Cells[4, RowIdx] := Columns[3]; // Протокол
+        StringGrid1.Cells[5, RowIdx] := Columns[4]; // Статус
       end;
     end;
 
@@ -217,17 +217,17 @@ end;
 
 procedure TForm1.Button1Click(Sender: TObject);
 begin
-  // РџСЂСЏС‡РµРј РєРЅРѕРїРєСѓ, С‡С‚РѕР±С‹ РёСЃРєР»СЋС‡РёС‚СЊ РїРѕРІС‚РѕСЂРЅС‹Рµ РЅР°Р¶Р°С‚РёСЏ
+  // Прячем кнопку, чтобы исключить повторные нажатия
   Button1.Visible := False;
 
-  // РџРѕРєР°Р·С‹РІР°РµРј РїСЂРѕРіСЂРµСЃСЃ-Р±Р°СЂ СЂРѕРІРЅРѕ РЅР° РјРµСЃС‚Рµ РєРЅРѕРїРєРё
+  // Показываем прогресс-бар ровно на месте кнопки
   ProgressBar1.Left := Button1.Left;
   ProgressBar1.Top := Button1.Top;
   ProgressBar1.Width := Button1.Width;
   ProgressBar1.Height := Button1.Height;
   ProgressBar1.Visible := True;
 
-  // Р—Р°РїСѓСЃРєР°РµРј С„РѕРЅРѕРІСѓСЋ Р·Р°РіСЂСѓР·РєСѓ
+  // Запускаем фоновую загрузку
   TUpdateThread.Create(Self);
 end;
 
@@ -239,7 +239,7 @@ begin
   begin
     if Trim(StringGrid1.Cells[1, i]) <> '' then
     begin
-      StringGrid1.Cells[5, i] := 'РџСЂРѕРІРµСЂРєР°...';
+      StringGrid1.Cells[5, i] := 'Проверка...';
       TTCPCheckThread.Create(Self, i, StringGrid1.Cells[1, i], StrToIntDef(StringGrid1.Cells[2, i], 443));
     end;
   end;
@@ -256,13 +256,13 @@ begin
   try
     for i := 1 to StringGrid1.RowCount - 1 do
     begin
-      if StringGrid1.Cells[5, i] = 'Р Р°Р±РѕС‚Р°РµС‚!' then
+      if StringGrid1.Cells[5, i] = 'Работает!' then
       begin
         TempList.Add(StringGrid1.Cells[1, i] + ',' + // IP
-                     StringGrid1.Cells[2, i] + ',' + // РџРѕСЂС‚
-                     StringGrid1.Cells[3, i] + ',' + // РЎС‚СЂР°РЅР°
-                     StringGrid1.Cells[4, i] + ',' + // РџСЂРѕС‚РѕРєРѕР»
-                     StringGrid1.Cells[5, i]);       // РЎС‚Р°С‚СѓСЃ
+                     StringGrid1.Cells[2, i] + ',' + // Порт
+                     StringGrid1.Cells[3, i] + ',' + // Страна
+                     StringGrid1.Cells[4, i] + ',' + // Протокол
+                     StringGrid1.Cells[5, i]);       // Статус
       end;
     end;
 
@@ -303,24 +303,6 @@ begin
   UpdateStats;
 end;
 
-procedure TForm1.StringGrid1DblClick(Sender: TObject);
-var
-  IP, FullAddress: string;
-  Row: Integer;
-begin
-  Row := StringGrid1.Row;
-  if Row > 0 then
-  begin
-    IP := StringGrid1.Cells[1, Row]; // IP РЅР°С…РѕРґРёС‚СЃСЏ РІРѕ 2-Р№ РєРѕР»РѕРЅРєРµ (РёРЅРґРµРєСЃ 1)
-    if Trim(IP) <> '' then
-    begin
-      FullAddress := IP;
-      Clipboard.AsText := FullAddress;
-      ShowMessage('РђРґСЂРµСЃ ' + FullAddress + ' СЃРєРѕРїРёСЂРѕРІР°РЅ РІ Р±СѓС„РµСЂ РѕР±РјРµРЅР°!');
-    end;
-  end;
-end;
-
 procedure TForm1.StringGrid1DrawCell(Sender: TObject; ACol, ARow: Integer;
   Rect: TRect; State: TGridDrawState);
 begin
@@ -335,14 +317,14 @@ begin
 
   StringGrid1.Canvas.FillRect(Rect);
 
-  // Р¦РІРµС‚ С‚РµРєСЃС‚Р° РґР»СЏ РєРѕР»РѕРЅРєРё СЃС‚Р°С‚СѓСЃР° (РёРЅРґРµРєСЃ 5)
+  // Цвет текста для колонки статуса (индекс 5)
   if ACol = 5 then
   begin
-    if StringGrid1.Cells[ACol, ARow] = 'Р Р°Р±РѕС‚Р°РµС‚!' then
+    if StringGrid1.Cells[ACol, ARow] = 'Работает!' then
       StringGrid1.Canvas.Font.Color := $0066CC33
-    else if StringGrid1.Cells[ACol, ARow] = 'РќРµРґРѕСЃС‚СѓРїРµРЅ' then
+    else if StringGrid1.Cells[ACol, ARow] = 'Недоступен' then
       StringGrid1.Canvas.Font.Color := $005555FF
-    else if StringGrid1.Cells[ACol, ARow] = 'РџСЂРѕРІРµСЂРєР°...' then
+    else if StringGrid1.Cells[ACol, ARow] = 'Проверка...' then
       StringGrid1.Canvas.Font.Color := $0033CCFF
     else
       StringGrid1.Canvas.Font.Color := clSilver;
@@ -369,16 +351,32 @@ begin
     if Trim(StringGrid1.Cells[1, i]) <> '' then
     begin
       Inc(Total);
-      if StringGrid1.Cells[5, i] = 'Р Р°Р±РѕС‚Р°РµС‚!' then
+      if StringGrid1.Cells[5, i] = 'Работает!' then
         Inc(Working);
     end;
   end;
 
-  StatusBar1.Panels[0].Text := 'Р’СЃРµРіРѕ СЃРµСЂРІРµСЂРѕРІ: ' + IntToStr(Total);
-  StatusBar1.Panels[1].Text := 'Р Р°Р±РѕС‚Р°РµС‚: ' + IntToStr(Working);
+  StatusBar1.Panels[0].Text := 'Всего серверов: ' + IntToStr(Total);
+  StatusBar1.Panels[1].Text := 'Работает: ' + IntToStr(Working);
 end;
 
-
+procedure TForm1.StringGrid1Click(Sender: TObject);
+var
+  IP, FullAddress: string;
+  Row: Integer;
+begin
+  Row := StringGrid1.Row;
+  if Row > 0 then
+  begin
+    IP := StringGrid1.Cells[1, Row]; // IP находится во 2-й колонке (индекс 1)
+    if Trim(IP) <> '' then
+    begin
+      FullAddress := IP;
+      Clipboard.AsText := FullAddress;
+      ShowMessage('Адрес ' + FullAddress + ' скопирован в буфер обмена!');
+    end;
+  end;
+end;
 
 procedure TForm1.StringGrid1MouseDown(Sender: TObject; Button: TMouseButton;
   Shift: TShiftState; X, Y: Integer);
@@ -390,7 +388,7 @@ var
 begin
   StringGrid1.MouseToCell(X, Y, ACol, ARow);
 
-  // РљР»РёРє РїРѕ С€Р°РїРєРµ (СЃС‚СЂРѕРєР° 0) РґР»СЏ РєРѕР»РѕРЅРѕРє IP (1), РџРѕСЂС‚ (2), РЎС‚СЂР°РЅР° (3)
+  // Клик по шапке (строка 0) для колонок IP (1), Порт (2), Страна (3)
   if (ARow = 0) and (ACol >= 1) and (ACol <= 3) then
   begin
     SetLength(TempRow, StringGrid1.ColCount);
@@ -401,7 +399,7 @@ begin
       begin
         if Trim(StringGrid1.Cells[1, i]) = '' then Break;
 
-        // Р”Р»СЏ РїРѕСЂС‚Р° (РєРѕР»РѕРЅРєР° 2) РёСЃРїРѕР»СЊР·СѓРµРј С‡РёСЃР»РѕРІРѕРµ СЃСЂР°РІРЅРµРЅРёРµ
+        // Для порта (колонка 2) используем числовое сравнение
         if ACol = 2 then
         begin
           if StrToIntDef(StringGrid1.Cells[ACol, i], 0) > StrToIntDef(StringGrid1.Cells[ACol, i + 1], 0) then
@@ -431,7 +429,7 @@ begin
       end;
     until not Swapped;
 
-    // РџРµСЂРµРЅСѓРјРµСЂРѕРІС‹РІР°РµРј РєРѕР»РѕРЅРєСѓ в„– (РёРЅРґРµРєСЃ 0) РїРѕСЃР»Рµ СЃРѕСЂС‚РёСЂРѕРІРєРё
+    // Перенумеровываем колонку № (индекс 0) после сортировки
     for i := 1 to StringGrid1.RowCount - 1 do
     begin
       if Trim(StringGrid1.Cells[1, i]) <> '' then
@@ -461,10 +459,10 @@ begin
       if Trim(StringGrid1.Cells[1, i]) <> '' then
       begin
         SL.Add(StringGrid1.Cells[1, i] + ',' + // IP
-               StringGrid1.Cells[2, i] + ',' + // РџРѕСЂС‚
-               StringGrid1.Cells[3, i] + ',' + // РЎС‚СЂР°РЅР°
-               StringGrid1.Cells[4, i] + ',' + // РџСЂРѕС‚РѕРєРѕР»
-               StringGrid1.Cells[5, i]);       // РЎС‚Р°С‚СѓСЃ
+               StringGrid1.Cells[2, i] + ',' + // Порт
+               StringGrid1.Cells[3, i] + ',' + // Страна
+               StringGrid1.Cells[4, i] + ',' + // Протокол
+               StringGrid1.Cells[5, i]);       // Статус
       end;
     end;
     SL.SaveToFile(ExtractFilePath(ParamStr(0)) + 'servers.txt');
@@ -531,7 +529,7 @@ begin
           PortStr := '443';
           Country := 'Unknown';
           if Columns.Count > 5 then
-            Country := Columns[5]; // РќР°Р·РІР°РЅРёРµ СЃС‚СЂР°РЅС‹
+            Country := Columns[5]; // Название страны
 
           try
             OVPN := TNetEncoding.Base64.Decode(Columns[14]);
@@ -556,8 +554,8 @@ begin
           except
           end;
 
-          // РЎРѕС…СЂР°РЅСЏРµРј РІРѕ РІСЂРµРјРµРЅРЅС‹Р№ СЃРїРёСЃРѕРє: IP, РџРѕСЂС‚, РЎС‚СЂР°РЅР°, РџСЂРѕС‚РѕРєРѕР», РЎС‚Р°С‚СѓСЃ
-          FTempServers.Add(Columns[1] + ',' + PortStr + ',' + Country + ',TCP,РћР¶РёРґР°РЅРёРµ');
+          // Сохраняем во временный список: IP, Порт, Страна, Протокол, Статус
+          FTempServers.Add(Columns[1] + ',' + PortStr + ',' + Country + ',TCP,Ожидание');
         end;
       end;
     end;
@@ -577,13 +575,13 @@ var
   Cols: TArray<string>;
   RowIdx: Integer;
 begin
-  // Р’РѕР·РІСЂР°С‰Р°РµРј РєРЅРѕРїРєСѓ РЅР° РјРµСЃС‚Рѕ Рё СЃРєСЂС‹РІР°РµРј РїСЂРѕРіСЂРµСЃСЃ-Р±Р°СЂ
+  // Возвращаем кнопку на место и скрываем прогресс-бар
   FForm.ProgressBar1.Visible := False;
   FForm.Button1.Visible := True;
 
   if not FSuccess then
   begin
-    ShowMessage('РћС€РёР±РєР° СЃРєР°С‡РёРІР°РЅРёСЏ: ' + FErrorMessage);
+    ShowMessage('Ошибка скачивания: ' + FErrorMessage);
     Exit;
   end;
 
@@ -598,12 +596,12 @@ begin
     Cols := FTempServers[i].Split([',']);
     if Length(Cols) >= 5 then
     begin
-      FForm.StringGrid1.Cells[0, RowIdx] := IntToStr(RowIdx); // в„–
+      FForm.StringGrid1.Cells[0, RowIdx] := IntToStr(RowIdx); // №
       FForm.StringGrid1.Cells[1, RowIdx] := Cols[0];          // IP
-      FForm.StringGrid1.Cells[2, RowIdx] := Cols[1];          // РџРѕСЂС‚
-      FForm.StringGrid1.Cells[3, RowIdx] := Cols[2];          // РЎС‚СЂР°РЅР°
-      FForm.StringGrid1.Cells[4, RowIdx] := Cols[3];          // РџСЂРѕС‚РѕРєРѕР»
-      FForm.StringGrid1.Cells[5, RowIdx] := Cols[4];          // РЎС‚Р°С‚СѓСЃ
+      FForm.StringGrid1.Cells[2, RowIdx] := Cols[1];          // Порт
+      FForm.StringGrid1.Cells[3, RowIdx] := Cols[2];          // Страна
+      FForm.StringGrid1.Cells[4, RowIdx] := Cols[3];          // Протокол
+      FForm.StringGrid1.Cells[5, RowIdx] := Cols[4];          // Статус
     end;
   end;
 

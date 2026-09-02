@@ -8,7 +8,7 @@ uses
   IdTCPConnection, IdTCPClient, IdHTTP, Vcl.Grids, Vcl.StdCtrls, Vcl.ExtCtrls,
   Clipbrd, System.NetEncoding,
   System.Net.URLClient, System.Net.HttpClient, System.Net.HttpClientComponent,
-  Vcl.ComCtrls, System.ImageList, Vcl.ImgList;
+  Vcl.ComCtrls, System.ImageList, Vcl.ImgList, Vcl.Menus;
 
 type
   TForm1 = class; // Предварительное объявление
@@ -57,18 +57,33 @@ type
     procedure Button2Click(Sender: TObject);
     procedure Button3Click(Sender: TObject);
     procedure FormCreate(Sender: TObject);
+    procedure FormDestroy(Sender: TObject);
     procedure NetHTTPClient1ValidateServerCertificate(const Sender: TObject;
       const ARequest: TURLRequest; const Certificate: TCertificate;
       var Accepted: Boolean);
     procedure StringGrid1DrawCell(Sender: TObject; ACol, ARow: Integer;
       Rect: TRect; State: TGridDrawState);
     procedure FormResize(Sender: TObject);
+    procedure StringGrid1Click(Sender: TObject);
     procedure StringGrid1MouseDown(Sender: TObject; Button: TMouseButton;
       Shift: TShiftState; X, Y: Integer);
-    procedure StringGrid1DblClick(Sender: TObject);
   private
+    FOVPNList: TStringList;     // Список Base64 строк .ovpn конфигураций для каждой строки
+    FSortedCol: Integer;        // Текущая отсортированная колонка
+    FSortAscending: Boolean;    // Направление сортировки
+    PopupMenu1: TPopupMenu;     // Контекстное меню
+    MenuItemCopyIP: TMenuItem;
+    MenuItemCopyPort: TMenuItem;
+    MenuItemCheckOne: TMenuItem;
+    MenuItemSaveOVPN: TMenuItem;
+
     procedure SaveListToFile;
     procedure UpdateStats;
+    procedure CreatePopupMenuItems;
+    procedure MenuCopyIPClick(Sender: TObject);
+    procedure MenuCopyPortClick(Sender: TObject);
+    procedure MenuCheckOneClick(Sender: TObject);
+    procedure MenuSaveOVPNClick(Sender: TObject);
   public
     { Public declarations }
   end;
@@ -94,7 +109,6 @@ end;
 
 procedure TTCPCheckThread.UpdateUI;
 begin
-  // Безопасно обновляем статус в 5-й колонке (индекс 5) для конкретной строки
   if FRowIndex < FForm.StringGrid1.RowCount then
     FForm.StringGrid1.Cells[5, FRowIndex] := FStatus;
 end;
@@ -135,6 +149,13 @@ var
   FilePath: string;
   RowIdx: Integer;
 begin
+  FOVPNList := TStringList.Create;
+  FSortedCol := -1;
+  FSortAscending := True;
+
+  // Создаем контекстное меню программно
+  CreatePopupMenuItems;
+
   StringGrid1.ColCount := 6;
   StringGrid1.FixedRows := 1;
   StringGrid1.RowCount := 2;
@@ -158,6 +179,7 @@ begin
   StringGrid1.DoubleBuffered := True;
   StringGrid1.Options := StringGrid1.Options + [goRowSelect];
   StringGrid1.Options := StringGrid1.Options - [goEditing];
+  StringGrid1.PopupMenu := PopupMenu1;
 
   FilePath := ExtractFilePath(ParamStr(0)) + 'servers.txt';
   if not FileExists(FilePath) then Exit;
@@ -173,6 +195,9 @@ begin
       StringGrid1.RowCount := SL.Count + 1;
 
     RowIdx := 0;
+    // Заполняем временный список OVPN пустыми строками для выравнивания
+    FOVPNList.Add('');
+
     for i := 0 to SL.Count - 1 do
     begin
       if Trim(SL[i]) = '' then Continue;
@@ -186,6 +211,11 @@ begin
         StringGrid1.Cells[3, RowIdx] := Columns[2]; // Страна
         StringGrid1.Cells[4, RowIdx] := Columns[3]; // Протокол
         StringGrid1.Cells[5, RowIdx] := Columns[4]; // Статус
+
+        if Columns.Count >= 6 then
+          FOVPNList.Add(Columns[5])
+        else
+          FOVPNList.Add('');
       end;
     end;
 
@@ -199,6 +229,117 @@ begin
   end;
 
   UpdateStats;
+end;
+
+procedure TForm1.FormDestroy(Sender: TObject);
+begin
+  FOVPNList.Free;
+end;
+
+procedure TForm1.CreatePopupMenuItems;
+begin
+  PopupMenu1 := TPopupMenu.Create(Self);
+
+  MenuItemCopyIP := TMenuItem.Create(PopupMenu1);
+  MenuItemCopyIP.Caption := 'Скопировать IP';
+  MenuItemCopyIP.OnClick := MenuCopyIPClick;
+  PopupMenu1.Items.Add(MenuItemCopyIP);
+
+  MenuItemCopyPort := TMenuItem.Create(PopupMenu1);
+  MenuItemCopyPort.Caption := 'Скопировать порт';
+  MenuItemCopyPort.OnClick := MenuCopyPortClick;
+  PopupMenu1.Items.Add(MenuItemCopyPort);
+
+  MenuItemCheckOne := TMenuItem.Create(PopupMenu1);
+  MenuItemCheckOne.Caption := 'Проверить этот сервер';
+  MenuItemCheckOne.OnClick := MenuCheckOneClick;
+  PopupMenu1.Items.Add(MenuItemCheckOne);
+
+  MenuItemSaveOVPN := TMenuItem.Create(PopupMenu1);
+  MenuItemSaveOVPN.Caption := 'Сохранить .ovpn файл...';
+  MenuItemSaveOVPN.OnClick := MenuSaveOVPNClick;
+  PopupMenu1.Items.Add(MenuItemSaveOVPN);
+end;
+
+procedure TForm1.MenuCopyIPClick(Sender: TObject);
+var
+  Row: Integer;
+begin
+  Row := StringGrid1.Row;
+  if (Row > 0) and (Trim(StringGrid1.Cells[1, Row]) <> '') then
+  begin
+    Clipboard.AsText := StringGrid1.Cells[1, Row];
+  end;
+end;
+
+procedure TForm1.MenuCopyPortClick(Sender: TObject);
+var
+  Row: Integer;
+begin
+  Row := StringGrid1.Row;
+  if (Row > 0) and (Trim(StringGrid1.Cells[2, Row]) <> '') then
+  begin
+    Clipboard.AsText := StringGrid1.Cells[2, Row];
+  end;
+end;
+
+procedure TForm1.MenuCheckOneClick(Sender: TObject);
+var
+  Row: Integer;
+begin
+  Row := StringGrid1.Row;
+  if (Row > 0) and (Trim(StringGrid1.Cells[1, Row]) <> '') then
+  begin
+    StringGrid1.Cells[5, Row] := 'Проверка...';
+    TTCPCheckThread.Create(Self, Row, StringGrid1.Cells[1, Row], StrToIntDef(StringGrid1.Cells[2, Row], 443));
+  end;
+end;
+
+procedure TForm1.MenuSaveOVPNClick(Sender: TObject);
+var
+  Row: Integer;
+  SaveDlg: TSaveDialog;
+  DecodedBytes: TBytes;
+  Stream: TFileStream;
+  Base64Str: string;
+begin
+  Row := StringGrid1.Row;
+  if (Row <= 0) or (Row >= FOVPNList.Count) then Exit;
+
+  Base64Str := FOVPNList[Row];
+  if Trim(Base64Str) = '' then
+  begin
+    ShowMessage('Для этого сервера отсутствует конфигурация OpenVPN.');
+    Exit;
+  end;
+
+  SaveDlg := TSaveDialog.Create(Self);
+  try
+    SaveDlg.Title := 'Сохранить .ovpn конфигурацию';
+    SaveDlg.Filter := 'OpenVPN Config (*.ovpn)|*.ovpn|All Files (*.*)|*.*';
+    SaveDlg.DefaultExt := 'ovpn';
+    SaveDlg.FileName := StringGrid1.Cells[1, Row] + '_' + StringGrid1.Cells[3, Row] + '.ovpn';
+
+    if SaveDlg.Execute then
+    begin
+      try
+        DecodedBytes := TNetEncoding.Base64.DecodeStringToBytes(Base64Str);
+        Stream := TFileStream.Create(SaveDlg.FileName, fmCreate);
+        try
+          if Length(DecodedBytes) > 0 then
+            Stream.WriteBuffer(DecodedBytes[0], Length(DecodedBytes));
+        finally
+          Stream.Free;
+        end;
+        ShowMessage('Файл успешно сохранен!');
+      except
+        on E: Exception do
+          ShowMessage('Ошибка сохранения файла: ' + E.Message);
+      end;
+    end;
+  finally
+    SaveDlg.Free;
+  end;
 end;
 
 procedure TForm1.FormResize(Sender: TObject);
@@ -217,17 +358,13 @@ end;
 
 procedure TForm1.Button1Click(Sender: TObject);
 begin
-  // Прячем кнопку, чтобы исключить повторные нажатия
   Button1.Visible := False;
-
-  // Показываем прогресс-бар ровно на месте кнопки
   ProgressBar1.Left := Button1.Left;
   ProgressBar1.Top := Button1.Top;
   ProgressBar1.Width := Button1.Width;
   ProgressBar1.Height := Button1.Height;
   ProgressBar1.Visible := True;
 
-  // Запускаем фоновую загрузку
   TUpdateThread.Create(Self);
 end;
 
@@ -249,34 +386,39 @@ procedure TForm1.Button3Click(Sender: TObject);
 var
   i: Integer;
   TempList: TStringList;
+  TempOVPN: TStringList;
   Cols: TArray<string>;
   RIdx: Integer;
 begin
   TempList := TStringList.Create;
+  TempOVPN := TStringList.Create;
   try
+    TempOVPN.Add('');
     for i := 1 to StringGrid1.RowCount - 1 do
     begin
       if StringGrid1.Cells[5, i] = 'Работает!' then
       begin
-        TempList.Add(StringGrid1.Cells[1, i] + ',' + // IP
-                     StringGrid1.Cells[2, i] + ',' + // Порт
-                     StringGrid1.Cells[3, i] + ',' + // Страна
-                     StringGrid1.Cells[4, i] + ',' + // Протокол
-                     StringGrid1.Cells[5, i]);       // Статус
+        TempList.Add(StringGrid1.Cells[1, i] + ',' +
+                     StringGrid1.Cells[2, i] + ',' +
+                     StringGrid1.Cells[3, i] + ',' +
+                     StringGrid1.Cells[4, i] + ',' +
+                     StringGrid1.Cells[5, i]);
+        if i < FOVPNList.Count then
+          TempOVPN.Add(FOVPNList[i])
+        else
+          TempOVPN.Add('');
       end;
     end;
+
+    FOVPNList.Assign(TempOVPN);
 
     if TempList.Count > 0 then
       StringGrid1.RowCount := TempList.Count + 1
     else
     begin
       StringGrid1.RowCount := 2;
-      StringGrid1.Cells[0, 1] := '';
-      StringGrid1.Cells[1, 1] := '';
-      StringGrid1.Cells[2, 1] := '';
-      StringGrid1.Cells[3, 1] := '';
-      StringGrid1.Cells[4, 1] := '';
-      StringGrid1.Cells[5, 1] := '';
+      for i := 0 to 5 do
+        StringGrid1.Cells[i, 1] := '';
       UpdateStats;
       SaveListToFile;
       Exit;
@@ -298,34 +440,39 @@ begin
     end;
   finally
     TempList.Free;
+    TempOVPN.Free;
   end;
   SaveListToFile;
   UpdateStats;
 end;
 
-procedure TForm1.StringGrid1DblClick(Sender: TObject);
-var
-  IP, FullAddress: string;
-  Row: Integer;
-begin
-  Row := StringGrid1.Row;
-  if Row > 0 then
-  begin
-    IP := StringGrid1.Cells[1, Row]; // IP находится во 2-й колонке (индекс 1)
-    if Trim(IP) <> '' then
-    begin
-      FullAddress := IP;
-      Clipboard.AsText := FullAddress;
-      ShowMessage('Адрес ' + FullAddress + ' скопирован в буфер обмена!');
-    end;
-  end;
-end;
-
 procedure TForm1.StringGrid1DrawCell(Sender: TObject; ACol, ARow: Integer;
   Rect: TRect; State: TGridDrawState);
+var
+  HeaderText: string;
 begin
-  if ARow = 0 then Exit;
+  // Отрисовка заголовков с учетом стрелочки сортировки
+  if ARow = 0 then
+  begin
+    StringGrid1.Canvas.Brush.Color := clBtnFace;
+    StringGrid1.Canvas.FillRect(Rect);
+    StringGrid1.Canvas.Font.Color := clBlack;
+    StringGrid1.Canvas.Font.Style := [fsBold];
 
+    HeaderText := StringGrid1.Cells[ACol, ARow];
+    if ACol = FSortedCol then
+    begin
+      if FSortAscending then
+        HeaderText := HeaderText + ' ▲'
+      else
+        HeaderText := HeaderText + ' ▼';
+    end;
+
+    StringGrid1.Canvas.TextRect(Rect, Rect.Left + 6, Rect.Top + 6, HeaderText);
+    Exit;
+  end;
+
+  // Отрисовка обычных строк
   if gdSelected in State then
     StringGrid1.Canvas.Brush.Color := $003A3A3A
   else if ARow mod 2 = 0 then
@@ -335,7 +482,6 @@ begin
 
   StringGrid1.Canvas.FillRect(Rect);
 
-  // Цвет текста для колонки статуса (индекс 5)
   if ACol = 5 then
   begin
     if StringGrid1.Cells[ACol, ARow] = 'Работает!' then
@@ -378,7 +524,10 @@ begin
   StatusBar1.Panels[1].Text := 'Работает: ' + IntToStr(Working);
 end;
 
-
+procedure TForm1.StringGrid1Click(Sender: TObject);
+begin
+  // Клик по строке (оставляем пустым или под быстрые действия, основные функции теперь в контекстном меню)
+end;
 
 procedure TForm1.StringGrid1MouseDown(Sender: TObject; Button: TMouseButton;
   Shift: TShiftState; X, Y: Integer);
@@ -386,13 +535,23 @@ var
   ACol, ARow: Integer;
   i, j: Integer;
   TempRow: TArray<string>;
+  TempOVPN: string;
   Swapped: Boolean;
+  CompareResult: Integer;
 begin
   StringGrid1.MouseToCell(X, Y, ACol, ARow);
 
-  // Клик по шапке (строка 0) для колонок IP (1), Порт (2), Страна (3)
+  // Клик по шапке для колонок IP (1), Порт (2), Страна (3)
   if (ARow = 0) and (ACol >= 1) and (ACol <= 3) then
   begin
+    if FSortedCol = ACol then
+      FSortAscending := not FSortAscending
+    else
+    begin
+      FSortedCol := ACol;
+      FSortAscending := True;
+    end;
+
     SetLength(TempRow, StringGrid1.ColCount);
 
     repeat
@@ -401,37 +560,45 @@ begin
       begin
         if Trim(StringGrid1.Cells[1, i]) = '' then Break;
 
-        // Для порта (колонка 2) используем числовое сравнение
-        if ACol = 2 then
+        if ACol = 2 then // Числовое сравнение для порта
         begin
-          if StrToIntDef(StringGrid1.Cells[ACol, i], 0) > StrToIntDef(StringGrid1.Cells[ACol, i + 1], 0) then
-          begin
-            for j := 0 to StringGrid1.ColCount - 1 do
-            begin
-              TempRow[j] := StringGrid1.Cells[j, i];
-              StringGrid1.Cells[j, i] := StringGrid1.Cells[j, i + 1];
-              StringGrid1.Cells[j, i + 1] := TempRow[j];
-            end;
-            Swapped := True;
-          end;
+          if FSortAscending then
+            CompareResult := Ord(StrToIntDef(StringGrid1.Cells[ACol, i], 0) > StrToIntDef(StringGrid1.Cells[ACol, i + 1], 0))
+          else
+            CompareResult := Ord(StrToIntDef(StringGrid1.Cells[ACol, i], 0) < StrToIntDef(StringGrid1.Cells[ACol, i + 1], 0));
         end
-        else
+        else // Текстовое сравнение
         begin
-          if AnsiCompareText(StringGrid1.Cells[ACol, i], StringGrid1.Cells[ACol, i + 1]) > 0 then
+          if FSortAscending then
+            CompareResult := Ord(AnsiCompareText(StringGrid1.Cells[ACol, i], StringGrid1.Cells[ACol, i + 1]) > 0)
+          else
+            CompareResult := Ord(AnsiCompareText(StringGrid1.Cells[ACol, i], StringGrid1.Cells[ACol, i + 1]) < 0);
+        end;
+
+        if CompareResult = 1 then
+        begin
+          // Меняем местами строки в Grid
+          for j := 0 to StringGrid1.ColCount - 1 do
           begin
-            for j := 0 to StringGrid1.ColCount - 1 do
-            begin
-              TempRow[j] := StringGrid1.Cells[j, i];
-              StringGrid1.Cells[j, i] := StringGrid1.Cells[j, i + 1];
-              StringGrid1.Cells[j, i + 1] := TempRow[j];
-            end;
-            Swapped := True;
+            TempRow[j] := StringGrid1.Cells[j, i];
+            StringGrid1.Cells[j, i] := StringGrid1.Cells[j, i + 1];
+            StringGrid1.Cells[j, i + 1] := TempRow[j];
           end;
+
+          // Синхронно меняем местами соответствующие OVPN конфиги в списке
+          if (i < FOVPNList.Count) and (i + 1 < FOVPNList.Count) then
+          begin
+            TempOVPN := FOVPNList[i];
+            FOVPNList[i] := FOVPNList[i + 1];
+            FOVPNList[i + 1] := TempOVPN;
+          end;
+
+          Swapped := True;
         end;
       end;
     until not Swapped;
 
-    // Перенумеровываем колонку № (индекс 0) после сортировки
+    // Обновляем порядковые номера (колонка 0)
     for i := 1 to StringGrid1.RowCount - 1 do
     begin
       if Trim(StringGrid1.Cells[1, i]) <> '' then
@@ -439,6 +606,8 @@ begin
       else
         StringGrid1.Cells[0, i] := '';
     end;
+
+    StringGrid1.Invalidate; // Перерисовываем со стрелочкой
   end;
 end;
 
@@ -453,6 +622,7 @@ procedure TForm1.SaveListToFile;
 var
   SL: TStringList;
   i: Integer;
+  OVPNStr: string;
 begin
   SL := TStringList.Create;
   try
@@ -460,11 +630,16 @@ begin
     begin
       if Trim(StringGrid1.Cells[1, i]) <> '' then
       begin
+        OVPNStr := '';
+        if i < FOVPNList.Count then
+          OVPNStr := FOVPNList[i];
+
         SL.Add(StringGrid1.Cells[1, i] + ',' + // IP
                StringGrid1.Cells[2, i] + ',' + // Порт
                StringGrid1.Cells[3, i] + ',' + // Страна
                StringGrid1.Cells[4, i] + ',' + // Протокол
-               StringGrid1.Cells[5, i]);       // Статус
+               StringGrid1.Cells[5, i] + ',' + // Статус
+               OVPNStr);                       // Base64 OVPN конфиг
       end;
     end;
     SL.SaveToFile(ExtractFilePath(ParamStr(0)) + 'servers.txt');
@@ -531,11 +706,14 @@ begin
           PortStr := '443';
           Country := 'Unknown';
           if Columns.Count > 5 then
-            Country := Columns[5]; // Название страны
+            Country := Columns[5];
+
+          OVPN := Columns[14]; // Базовый Base64 конфиг из API
 
           try
-            OVPN := TNetEncoding.Base64.Decode(Columns[14]);
-            OVPNLines.Text := OVPN;
+            AILE: string;
+            AILE := TNetEncoding.Base64.Decode(Columns[14]);
+            OVPNLines.Text := AILE;
 
             for j := 0 to OVPNLines.Count - 1 do
             begin
@@ -556,8 +734,8 @@ begin
           except
           end;
 
-          // Сохраняем во временный список: IP, Порт, Страна, Протокол, Статус
-          FTempServers.Add(Columns[1] + ',' + PortStr + ',' + Country + ',TCP,Ожидание');
+          // Формат строки: IP, Порт, Страна, Протокол, Статус | Base64OVPN
+          FTempServers.Add(Columns[1] + ',' + PortStr + ',' + Country + ',TCP,Ожидание|' + OVPN);
         end;
       end;
     end;
@@ -574,10 +752,10 @@ end;
 procedure TUpdateThread.UpdateUI;
 var
   i: Integer;
+  Parts: TArray<string>;
   Cols: TArray<string>;
   RowIdx: Integer;
 begin
-  // Возвращаем кнопку на место и скрываем прогресс-бар
   FForm.ProgressBar1.Visible := False;
   FForm.Button1.Visible := True;
 
@@ -587,6 +765,9 @@ begin
     Exit;
   end;
 
+  FForm.FOVPNList.Clear;
+  FForm.FOVPNList.Add(''); // Пустой элемент для хедера
+
   if FTempServers.Count > 0 then
     FForm.StringGrid1.RowCount := FTempServers.Count + 1
   else
@@ -595,15 +776,20 @@ begin
   for i := 0 to FTempServers.Count - 1 do
   begin
     RowIdx := i + 1;
-    Cols := FTempServers[i].Split([',']);
-    if Length(Cols) >= 5 then
+    Parts := FTempServers[i].Split(['|']); // Разделяем параметры и сам Base64 OVPN
+    if Length(Parts) >= 2 then
     begin
-      FForm.StringGrid1.Cells[0, RowIdx] := IntToStr(RowIdx); // №
-      FForm.StringGrid1.Cells[1, RowIdx] := Cols[0];          // IP
-      FForm.StringGrid1.Cells[2, RowIdx] := Cols[1];          // Порт
-      FForm.StringGrid1.Cells[3, RowIdx] := Cols[2];          // Страна
-      FForm.StringGrid1.Cells[4, RowIdx] := Cols[3];          // Протокол
-      FForm.StringGrid1.Cells[5, RowIdx] := Cols[4];          // Статус
+      FForm.FOVPNList.Add(Parts[1]);
+      Cols := Parts[0].Split([',']);
+      if Length(Cols) >= 5 then
+      begin
+        FForm.StringGrid1.Cells[0, RowIdx] := IntToStr(RowIdx); // №
+        FForm.StringGrid1.Cells[1, RowIdx] := Cols[0];          // IP
+        FForm.StringGrid1.Cells[2, RowIdx] := Cols[1];          // Порт
+        FForm.StringGrid1.Cells[3, RowIdx] := Cols[2];          // Страна
+        FForm.StringGrid1.Cells[4, RowIdx] := Cols[3];          // Протокол
+        FForm.StringGrid1.Cells[5, RowIdx] := Cols[4];          // Статус
+      end;
     end;
   end;
 

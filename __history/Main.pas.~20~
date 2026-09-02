@@ -7,7 +7,8 @@ uses
   Vcl.Controls, Vcl.Forms, Vcl.Dialogs, IdBaseComponent, IdComponent,
   IdTCPConnection, IdTCPClient, IdHTTP, Vcl.Grids, Vcl.StdCtrls, Vcl.ExtCtrls,
   Clipbrd, System.NetEncoding,
-  System.Net.URLClient, System.Net.HttpClient, System.Net.HttpClientComponent;
+  System.Net.URLClient, System.Net.HttpClient, System.Net.HttpClientComponent,
+  Vcl.ComCtrls, System.ImageList, Vcl.ImgList;
 
 type
   TForm1 = class; // Предварительное объявление
@@ -27,6 +28,21 @@ type
     constructor Create(AForm: TForm1; ARowIndex: Integer; AIP: string; APort: Integer);
   end;
 
+ // Фоновый поток для скачивания и парсинга серверов
+  TUpdateThread = class(TThread)
+  private
+    FForm: TForm1;
+    FErrorMessage: string;
+    FSuccess: Boolean;
+    FTempServers: TStringList;
+    procedure UpdateUI;
+  protected
+    procedure Execute; override;
+  public
+    constructor Create(AForm: TForm1);
+    destructor Destroy; override;
+  end;
+
   TForm1 = class(TForm)
     Panel1: TPanel;
     Button1: TButton;
@@ -34,6 +50,9 @@ type
     Button3: TButton;
     StringGrid1: TStringGrid;
     NetHTTPClient1: TNetHTTPClient;
+    ProgressBar1: TProgressBar;
+    ImageList1: TImageList;
+    StatusBar1: TStatusBar;
     procedure Button1Click(Sender: TObject);
     procedure Button2Click(Sender: TObject);
     procedure Button3Click(Sender: TObject);
@@ -44,10 +63,10 @@ type
     procedure StringGrid1DrawCell(Sender: TObject; ACol, ARow: Integer;
       Rect: TRect; State: TGridDrawState);
     procedure FormResize(Sender: TObject);
-    procedure StringGrid1DblClick(Sender: TObject);
     procedure StringGrid1Click(Sender: TObject);
   private
     procedure SaveListToFile;
+    procedure UpdateStats;
   public
     { Public declarations }
   end;
@@ -114,22 +133,25 @@ var
   FilePath: string;
   RowIdx: Integer;
 begin
-  // Базовая настройка сетки
-  StringGrid1.ColCount := 4;
-  StringGrid1.RowCount := 1;
+  StringGrid1.ColCount := 6;
   StringGrid1.FixedRows := 1;
+  StringGrid1.RowCount := 2;
 
   // Заголовки колонок
-  StringGrid1.Cells[0, 0] := 'IP';
-  StringGrid1.Cells[1, 0] := 'Порт';
-  StringGrid1.Cells[2, 0] := 'Протокол';
-  StringGrid1.Cells[3, 0] := 'Статус';
+  StringGrid1.Cells[0, 0] := '№';
+  StringGrid1.Cells[1, 0] := 'IP';
+  StringGrid1.Cells[2, 0] := 'Порт';
+  StringGrid1.Cells[3, 0] := 'Страна';
+  StringGrid1.Cells[4, 0] := 'Протокол';
+  StringGrid1.Cells[5, 0] := 'Статус';
 
-  // Фиксированная ширина для первых трех колонок
-  StringGrid1.ColWidths[0] := 160;
-  StringGrid1.ColWidths[1] := 80;
-  StringGrid1.ColWidths[2] := 90;
-  StringGrid1.ColWidths[3] := 200;
+  // Ширина колонок
+  StringGrid1.ColWidths[0] := 45;
+  StringGrid1.ColWidths[1] := 140;
+  StringGrid1.ColWidths[2] := 70;
+  StringGrid1.ColWidths[3] := 130;
+  StringGrid1.ColWidths[4] := 80;
+  StringGrid1.ColWidths[5] := 150;
 
   StringGrid1.DoubleBuffered := True;
   StringGrid1.Options := StringGrid1.Options + [goRowSelect];
@@ -145,24 +167,33 @@ begin
 
   try
     SL.LoadFromFile(FilePath);
+    if SL.Count > 0 then
+      StringGrid1.RowCount := SL.Count + 1; // Устанавливаем точный размер под файл
+
+    RowIdx := 0;
     for i := 0 to SL.Count - 1 do
     begin
       if Trim(SL[i]) = '' then Continue;
       Columns.DelimitedText := SL[i];
       if Columns.Count >= 4 then
       begin
-        StringGrid1.RowCount := StringGrid1.RowCount + 1;
-        RowIdx := StringGrid1.RowCount - 1;
+        Inc(RowIdx);
         StringGrid1.Cells[0, RowIdx] := Columns[0];
         StringGrid1.Cells[1, RowIdx] := Columns[1];
         StringGrid1.Cells[2, RowIdx] := Columns[2];
         StringGrid1.Cells[3, RowIdx] := Columns[3];
       end;
     end;
+
+    // Если реальных строк оказалось меньше
+    if RowIdx > 0 then
+      StringGrid1.RowCount := RowIdx + 1;
   finally
     SL.Free;
     Columns.Free;
   end;
+
+  UpdateStats;
 end;
 
 procedure TForm1.FormResize(Sender: TObject);
@@ -180,83 +211,19 @@ begin
 end;
 
 procedure TForm1.Button1Click(Sender: TObject);
-var
-  CSVData, OVPN, PortStr: string;
-  Lines, Columns, OVPNLines: TStringList;
-  i, j, P: Integer;
-  RowIdx: Integer;
 begin
-  try
-    NetHTTPClient1.UserAgent := 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36';
-    CSVData := NetHTTPClient1.Get('https://www.vpngate.net/api/iphone/').ContentAsString();
-  except
-    on E: Exception do
-    begin
-      ShowMessage('Ошибка скачивания: ' + E.Message);
-      Exit;
-    end;
-  end;
+  // Прячем кнопку, чтобы исключить повторные нажатия
+  Button1.Visible := False;
 
-  Lines := TStringList.Create;
-  Columns := TStringList.Create;
-  OVPNLines := TStringList.Create;
-  Columns.StrictDelimiter := True;
-  Columns.Delimiter := ',';
+  // Показываем прогресс-бар ровно на месте кнопки
+  ProgressBar1.Left := Button1.Left;
+  ProgressBar1.Top := Button1.Top;
+  ProgressBar1.Width := Button1.Width;
+  ProgressBar1.Height := Button1.Height;
+  ProgressBar1.Visible := True;
 
-  try
-    Lines.Text := CSVData;
-    StringGrid1.RowCount := 1; // Сбрасываем таблицу, оставляя только шапку
-
-    for i := 0 to Lines.Count - 1 do
-    begin
-      if (Trim(Lines[i]) = '') or (Lines[i][1] = '*') then Continue;
-
-      Columns.DelimitedText := Lines[i];
-
-      if (Columns.Count > 1) and (Columns[1] = 'IP') then Continue;
-
-      if Columns.Count > 14 then
-      begin
-        PortStr := '443';
-        try
-          OVPN := TNetEncoding.Base64.Decode(Columns[14]);
-          OVPNLines.Text := OVPN;
-
-          for j := 0 to OVPNLines.Count - 1 do
-          begin
-            if Pos('remote ', Trim(OVPNLines[j])) = 1 then
-            begin
-              PortStr := Trim(OVPNLines[j]);
-              Delete(PortStr, 1, 7);
-              PortStr := Trim(PortStr);
-
-              P := Pos(' ', PortStr);
-              if P > 0 then
-              begin
-                Delete(PortStr, 1, P);
-                PortStr := Trim(PortStr);
-                Break;
-              end;
-            end;
-          end;
-        except
-        end;
-
-        StringGrid1.RowCount := StringGrid1.RowCount + 1;
-        RowIdx := StringGrid1.RowCount - 1;
-
-        StringGrid1.Cells[0, RowIdx] := Columns[1];
-        StringGrid1.Cells[1, RowIdx] := PortStr;
-        StringGrid1.Cells[2, RowIdx] := 'TCP';
-        StringGrid1.Cells[3, RowIdx] := 'Ожидание';
-      end;
-    end;
-  finally
-    Lines.Free;
-    Columns.Free;
-    OVPNLines.Free;
-  end;
-  SaveListToFile;
+  // Запускаем фоновую загрузку
+  TUpdateThread.Create(Self);
 end;
 
 procedure TForm1.Button2Click(Sender: TObject);
@@ -279,7 +246,6 @@ var
 begin
   TempList := TStringList.Create;
   try
-    // Собираем только рабочие серверы
     for i := 1 to StringGrid1.RowCount - 1 do
     begin
       if StringGrid1.Cells[3, i] = 'Работает!' then
@@ -291,12 +257,22 @@ begin
       end;
     end;
 
-    // Перезаполняем таблицу отфильтрованными данными
-    StringGrid1.RowCount := 1;
+    // Безопасный размер: если рабочих нет, оставляем 2 строки (пустую), чтобы не вызвать ошибку
+    if TempList.Count > 0 then
+      StringGrid1.RowCount := TempList.Count + 1
+    else
+    begin
+      StringGrid1.RowCount := 2;
+      StringGrid1.Cells[0, 1] := '';
+      StringGrid1.Cells[1, 1] := '';
+      StringGrid1.Cells[2, 1] := '';
+      StringGrid1.Cells[3, 1] := '';
+      Exit;
+    end;
+
     for i := 0 to TempList.Count - 1 do
     begin
-      StringGrid1.RowCount := StringGrid1.RowCount + 1;
-      RIdx := StringGrid1.RowCount - 1;
+      RIdx := i + 1;
       Cols := TempList[i].Split([',']);
       if Length(Cols) >= 4 then
       begin
@@ -310,6 +286,7 @@ begin
     TempList.Free;
   end;
   SaveListToFile;
+  UpdateStats;
 end;
 
 procedure TForm1.StringGrid1DrawCell(Sender: TObject; ACol, ARow: Integer;
@@ -352,6 +329,27 @@ begin
 end;
 
 
+procedure TForm1.UpdateStats;
+var
+  i, Total, Working: Integer;
+begin
+  Total := 0;
+  Working := 0;
+
+  for i := 1 to StringGrid1.RowCount - 1 do
+  begin
+    if Trim(StringGrid1.Cells[0, i]) <> '' then
+    begin
+      Inc(Total);
+      if StringGrid1.Cells[3, i] = 'Работает!' then
+        Inc(Working);
+    end;
+  end;
+
+  StatusBar1.Panels[0].Text := 'Всего серверов: ' + IntToStr(Total);
+  StatusBar1.Panels[1].Text := 'Работает: ' + IntToStr(Working);
+end;
+
 procedure TForm1.StringGrid1Click(Sender: TObject);
 var
   IP, FullAddress: string;
@@ -393,6 +391,139 @@ begin
   finally
     SL.Free;
   end;
+end;
+
+{ TUpdateThread }
+
+constructor TUpdateThread.Create(AForm: TForm1);
+begin
+  FForm := AForm;
+  FTempServers := TStringList.Create;
+  FSuccess := False;
+  inherited Create(False); // Запускаем поток сразу
+  FreeOnTerminate := True; // Автоудаление после завершения
+end;
+
+destructor TUpdateThread.Destroy;
+begin
+  FTempServers.Free;
+  inherited;
+end;
+
+procedure TUpdateThread.Execute;
+var
+  Client: TNetHTTPClient;
+  CSVData, OVPN, PortStr: string;
+  Lines, Columns, OVPNLines: TStringList;
+  i, j, P: Integer;
+begin
+  Client := TNetHTTPClient.Create(nil);
+  Lines := TStringList.Create;
+  Columns := TStringList.Create;
+  OVPNLines := TStringList.Create;
+  Columns.StrictDelimiter := True;
+  Columns.Delimiter := ',';
+  try
+    try
+      Client.UserAgent := 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36';
+      CSVData := Client.Get('https://www.vpngate.net/api/iphone/').ContentAsString();
+      FSuccess := True;
+    except
+      on E: Exception do
+      begin
+        FErrorMessage := E.Message;
+        FSuccess := False;
+        Exit;
+      end;
+    end;
+
+    if FSuccess then
+    begin
+      Lines.Text := CSVData;
+      for i := 0 to Lines.Count - 1 do
+      begin
+        if (Trim(Lines[i]) = '') or (Lines[i][1] = '*') then Continue;
+        Columns.DelimitedText := Lines[i];
+        if (Columns.Count > 1) and (Columns[1] = 'IP') then Continue;
+
+        if Columns.Count > 14 then
+        begin
+          PortStr := '443';
+          try
+            OVPN := TNetEncoding.Base64.Decode(Columns[14]);
+            OVPNLines.Text := OVPN;
+
+            for j := 0 to OVPNLines.Count - 1 do
+            begin
+              if Pos('remote ', Trim(OVPNLines[j])) = 1 then
+              begin
+                PortStr := Trim(OVPNLines[j]);
+                Delete(PortStr, 1, 7);
+                PortStr := Trim(PortStr);
+                P := Pos(' ', PortStr);
+                if P > 0 then
+                begin
+                  Delete(PortStr, 1, P);
+                  PortStr := Trim(PortStr);
+                  Break;
+                end;
+              end;
+            end;
+          except
+          end;
+
+          FTempServers.Add(Columns[1] + ',' + PortStr + ',TCP,Ожидание');
+        end;
+      end;
+    end;
+  finally
+    Client.Free;
+    Lines.Free;
+    Columns.Free;
+    OVPNLines.Free;
+  end;
+
+  // Безопасно передаем данные в главный поток для отрисовки
+  Synchronize(UpdateUI);
+end;
+
+procedure TUpdateThread.UpdateUI;
+var
+  i: Integer;
+  Cols: TArray<string>;
+  RowIdx: Integer;
+begin
+  // Скрываем прогресс-бар и возвращаем кнопку на место
+  FForm.ProgressBar1.Visible := False;
+  FForm.Button1.Visible := True;
+
+  if not FSuccess then
+  begin
+    ShowMessage('Ошибка скачивания: ' + FErrorMessage);
+    Exit;
+  end;
+
+  if FTempServers.Count > 0 then
+    FForm.StringGrid1.RowCount := FTempServers.Count + 1
+  else
+    FForm.StringGrid1.RowCount := 2;
+
+  for i := 0 to FTempServers.Count - 1 do
+  begin
+    RowIdx := i + 1;
+    Cols := FTempServers[i].Split([',']);
+    if Length(Cols) >= 4 then
+    begin
+      FForm.StringGrid1.Cells[0, RowIdx] := Cols[0];
+      FForm.StringGrid1.Cells[1, RowIdx] := Cols[1];
+      FForm.StringGrid1.Cells[2, RowIdx] := Cols[2];
+      FForm.StringGrid1.Cells[3, RowIdx] := Cols[3];
+    end;
+  end;
+
+  FForm.SaveListToFile;
+
+  FForm.UpdateStats;
 end;
 
 end.

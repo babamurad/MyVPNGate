@@ -3,7 +3,7 @@ object Form1: TForm1
   Top = 0
   Caption = 'MyVPNGate - '#1052#1086#1085#1080#1090#1086#1088#1080#1085#1075' '#1089#1077#1088#1074#1077#1088#1086#1074
   ClientHeight = 610
-  ClientWidth = 840
+  ClientWidth = 881
   Color = clBtnFace
   Constraints.MinHeight = 500
   Constraints.MinWidth = 640
@@ -20,7 +20,7 @@ object Form1: TForm1
   object Panel1: TPanel
     Left = 0
     Top = 0
-    Width = 840
+    Width = 881
     Height = 89
     Align = alTop
     TabOrder = 0
@@ -74,21 +74,21 @@ object Form1: TForm1
   object StringGrid1: TStringGrid
     Left = 0
     Top = 89
-    Width = 840
+    Width = 881
     Height = 502
     Align = alClient
     ColCount = 4
     RowCount = 2
     Options = [goFixedVertLine, goFixedHorzLine, goVertLine, goHorzLine, goRangeSelect, goRowSelect, goFixedRowDefAlign]
     TabOrder = 1
-    OnDblClick = StringGrid1DblClick
+    OnClick = StringGrid1Click
     ExplicitWidth = 994
     ExplicitHeight = 450
   end
   object StatusBar1: TStatusBar
     Left = 0
     Top = 591
-    Width = 840
+    Width = 881
     Height = 19
     Panels = <
       item
@@ -104,15 +104,15 @@ object Form1: TForm1
   object NetHTTPClient1: TNetHTTPClient
     UserAgent = 'Embarcadero URI Client/1.0'
     OnValidateServerCertificate = NetHTTPClient1ValidateServerCertificate
-    Left = 664
-    Top = 128
+    Left = 824
+    Top = 264
   end
   object ImageList1: TImageList
     ColorDepth = cd32Bit
     Height = 32
     Width = 32
-    Left = 736
-    Top = 136
+    Left = 840
+    Top = 336
     Bitmap = {
       494C010103000800040020002000FFFFFFFF2110FFFFFFFFFFFFFFFF424D3600
       0000000000003600000028000000800000002000000001002000000000000040
