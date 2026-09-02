@@ -592,6 +592,14 @@ begin
   MenuCopyPort.Enabled := HasRow;
   MenuRecheckServer.Enabled := HasRow;
   MenuSaveOvpn.Enabled := HasRow;
+
+  // Показываем меню вручную вместо того, чтобы полагаться на автоматический
+  // показ через свойство PopupMenu — на части систем/версий VCL он почему-то
+  // не срабатывает, хотя выбор строки при этом происходит корректно.
+  // MousePos тут ещё в экранных координатах — то, что и нужно для Popup.
+  PopupMenu1.PopupComponent := StringGrid1;
+  PopupMenu1.Popup(MousePos.X, MousePos.Y);
+  Handled := True; // меню уже показано нами — не даём VCL показать его повторно
 end;
 
 procedure TForm1.MenuCopyIPClick(Sender: TObject);
