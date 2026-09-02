@@ -104,7 +104,7 @@ implementation
 const
   // Базовые (без стрелки сортировки) подписи сортируемых колонок:
   // 1 - IP, 2 - Порт, 3 - Страна, 4 - Пинг (мс), 5 - Скорость (Мбит/с)
-  ColHeaderBase: array[1..5] of string = ('IP', 'Порт', 'Страна', 'Пинг', 'Скорость');
+  ColHeaderBase: array[1..5] of string = ('IP', 'Порт', 'Страна', 'Пинг, мс', 'Скорость, Мбит/с');
 
 // Сравнение IP-адресов по числовым октетам, а не как обычных строк
 // (иначе, например, "10.0.0.1" оказался бы "меньше" "9.0.0.1")
@@ -211,8 +211,8 @@ begin
   StringGrid1.ColWidths[1] := 130;
   StringGrid1.ColWidths[2] := 60;
   StringGrid1.ColWidths[3] := 100;
-  StringGrid1.ColWidths[4] := 70;
-  StringGrid1.ColWidths[5] := 100;
+  StringGrid1.ColWidths[4] := 85;
+  StringGrid1.ColWidths[5] := 130;
   StringGrid1.ColWidths[6] := 80;
   StringGrid1.ColWidths[7] := 150;
 
@@ -705,9 +705,12 @@ procedure TUpdateThread.Execute;
 var
   Client: TNetHTTPClient;
   CSVData, OVPN, PortStr, Country, PingStr, SpeedStr: string;
+  Protocol, ProtoRaw, LineTrim: string;
+  RemoteParts: TArray<string>;
   Lines, Columns, OVPNLines: TStringList;
-  i, j, P: Integer;
+  i, j: Integer;
   SpeedBps: Int64;
+  FoundRemote: Boolean;
 begin
   Client := TNetHTTPClient.Create(nil);
   Lines := TStringList.Create;
@@ -758,25 +761,49 @@ begin
               SpeedStr := FormatFloat('0.0', SpeedBps / 1000000);
           end;
 
+          // По умолчанию OpenVPN использует UDP, если явно не указано иное —
+          // это значение подменяется ниже, если конфиг сервера говорит другое
+          Protocol := 'UDP';
+
           OVPN := '';
+          FoundRemote := False;
           try
             OVPN := TNetEncoding.Base64.Decode(Columns[14]);
             OVPNLines.Text := OVPN;
 
+            // Директива "proto" может стоять как до, так и после "remote",
+            // поэтому дочитываем файл целиком, а не выходим по первой строке
             for j := 0 to OVPNLines.Count - 1 do
             begin
-              if Pos('remote ', Trim(OVPNLines[j])) = 1 then
+              LineTrim := Trim(OVPNLines[j]);
+
+              // Отдельная директива "proto tcp-client" / "proto udp" и т.п.
+              if Pos('proto ', LineTrim) = 1 then
               begin
-                PortStr := Trim(OVPNLines[j]);
-                Delete(PortStr, 1, 7);
-                PortStr := Trim(PortStr);
-                P := Pos(' ', PortStr);
-                if P > 0 then
+                ProtoRaw := LowerCase(Trim(Copy(LineTrim, 7, MaxInt)));
+                if Pos('tcp', ProtoRaw) = 1 then
+                  Protocol := 'TCP'
+                else if Pos('udp', ProtoRaw) = 1 then
+                  Protocol := 'UDP';
+              end;
+
+              // Берём порт (и протокол, если он указан прямо тут) из первой
+              // строки "remote" — конфиг может перечислять несколько
+              if (not FoundRemote) and (Pos('remote ', LineTrim) = 1) then
+              begin
+                // Формат строки: "remote <ip> <порт> [proto]"
+                RemoteParts := Trim(Copy(LineTrim, 8, MaxInt)).Split([' ']);
+                if Length(RemoteParts) >= 2 then
+                  PortStr := Trim(RemoteParts[1]);
+                if Length(RemoteParts) >= 3 then
                 begin
-                  Delete(PortStr, 1, P);
-                  PortStr := Trim(PortStr);
-                  Break;
+                  ProtoRaw := LowerCase(Trim(RemoteParts[2]));
+                  if Pos('tcp', ProtoRaw) = 1 then
+                    Protocol := 'TCP'
+                  else if Pos('udp', ProtoRaw) = 1 then
+                    Protocol := 'UDP';
                 end;
+                FoundRemote := True;
               end;
             end;
           except
@@ -784,7 +811,7 @@ begin
 
           // Сохраняем во временный список: IP, Порт, Страна, Пинг, Скорость, Протокол, Статус
           FTempServers.Add(Columns[1] + ',' + PortStr + ',' + Country + ',' +
-            PingStr + ',' + SpeedStr + ',TCP,Ожидание');
+            PingStr + ',' + SpeedStr + ',' + Protocol + ',Ожидание');
 
           // Сохраняем декодированный OpenVPN-конфиг для последующего экспорта в .ovpn
           if (OVPN <> '') and (Trim(Columns[1]) <> '') then

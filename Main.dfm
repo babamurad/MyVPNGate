@@ -3,10 +3,10 @@ object Form1: TForm1
   Top = 0
   Caption = 'MyVPNGate - '#1052#1086#1085#1080#1090#1086#1088#1080#1085#1075' '#1089#1077#1088#1074#1077#1088#1086#1074
   ClientHeight = 610
-  ClientWidth = 900
+  ClientWidth = 940
   Color = clBtnFace
   Constraints.MinHeight = 500
-  Constraints.MinWidth = 760
+  Constraints.MinWidth = 820
   Font.Charset = DEFAULT_CHARSET
   Font.Color = clWindowText
   Font.Height = -12
@@ -21,7 +21,7 @@ object Form1: TForm1
   object Panel1: TPanel
     Left = 0
     Top = 0
-    Width = 900
+    Width = 940
     Height = 89
     Align = alTop
     TabOrder = 0
@@ -75,7 +75,7 @@ object Form1: TForm1
   object StringGrid1: TStringGrid
     Left = 0
     Top = 89
-    Width = 900
+    Width = 940
     Height = 502
     Align = alClient
     ColCount = 4
@@ -92,7 +92,7 @@ object Form1: TForm1
   object StatusBar1: TStatusBar
     Left = 0
     Top = 591
-    Width = 900
+    Width = 940
     Height = 19
     Panels = <
       item
