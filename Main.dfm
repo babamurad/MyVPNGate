@@ -14,6 +14,7 @@ object Form1: TForm1
   Font.Style = []
   Position = poScreenCenter
   OnCreate = FormCreate
+  OnDestroy = FormDestroy
   OnResize = FormResize
   PixelsPerInch = 96
   TextHeight = 15
@@ -80,8 +81,11 @@ object Form1: TForm1
     ColCount = 4
     RowCount = 2
     Options = [goFixedVertLine, goFixedHorzLine, goVertLine, goHorzLine, goRangeSelect, goRowSelect, goFixedRowDefAlign]
+    PopupMenu = PopupMenu1
     TabOrder = 1
+    OnContextPopup = StringGrid1ContextPopup
     OnDblClick = StringGrid1DblClick
+    OnMouseDown = StringGrid1MouseDown
     ExplicitWidth = 994
     ExplicitHeight = 450
   end
@@ -648,5 +652,29 @@ object Form1: TForm1
       0000000000000000000000000000000000000000000000000000000000000000
       0000000000000000000000000000000000000000000000000000000000000000
       000000000000}
+  end
+  object PopupMenu1: TPopupMenu
+    Left = 760
+    Top = 264
+    object MenuCopyIP: TMenuItem
+      Caption = #1057#1082#1086#1087#1080#1088#1086#1074#1072#1090#1100' IP'
+      OnClick = MenuCopyIPClick
+    end
+    object MenuCopyPort: TMenuItem
+      Caption = #1057#1082#1086#1087#1080#1088#1086#1074#1072#1090#1100' '#1087#1086#1088#1090
+      OnClick = MenuCopyPortClick
+    end
+    object MenuRecheckServer: TMenuItem
+      Caption = #1055#1088#1086#1074#1077#1088#1080#1090#1100' '#1101#1090#1086#1090' '#1089#1077#1088#1074#1077#1088
+      OnClick = MenuRecheckServerClick
+    end
+    object MenuSaveOvpn: TMenuItem
+      Caption = #1057#1086#1093#1088#1072#1085#1080#1090#1100' .ovpn '#1092#1072#1081#1083'...'
+      OnClick = MenuSaveOvpnClick
+    end
+  end
+  object SaveDialog1: TSaveDialog
+    Left = 760
+    Top = 336
   end
 end

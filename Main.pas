@@ -8,7 +8,8 @@ uses
   IdTCPConnection, IdTCPClient, IdHTTP, Vcl.Grids, Vcl.StdCtrls, Vcl.ExtCtrls,
   Clipbrd, System.NetEncoding,
   System.Net.URLClient, System.Net.HttpClient, System.Net.HttpClientComponent,
-  Vcl.ComCtrls, System.ImageList, Vcl.ImgList;
+  Vcl.ComCtrls, System.ImageList, Vcl.ImgList, Vcl.Menus,
+  System.Generics.Collections, System.IOUtils;
 
 type
   TForm1 = class; // Предварительное объявление
@@ -35,6 +36,7 @@ type
     FErrorMessage: string;
     FSuccess: Boolean;
     FTempServers: TStringList;
+    FTempOvpn: TDictionary<string, string>;
     procedure UpdateUI;
   protected
     procedure Execute; override;
@@ -53,10 +55,17 @@ type
     ProgressBar1: TProgressBar;
     ImageList1: TImageList;
     StatusBar1: TStatusBar;
+    PopupMenu1: TPopupMenu;
+    MenuCopyIP: TMenuItem;
+    MenuCopyPort: TMenuItem;
+    MenuRecheckServer: TMenuItem;
+    MenuSaveOvpn: TMenuItem;
+    SaveDialog1: TSaveDialog;
     procedure Button1Click(Sender: TObject);
     procedure Button2Click(Sender: TObject);
     procedure Button3Click(Sender: TObject);
     procedure FormCreate(Sender: TObject);
+    procedure FormDestroy(Sender: TObject);
     procedure NetHTTPClient1ValidateServerCertificate(const Sender: TObject;
       const ARequest: TURLRequest; const Certificate: TCertificate;
       var Accepted: Boolean);
@@ -66,9 +75,21 @@ type
     procedure StringGrid1MouseDown(Sender: TObject; Button: TMouseButton;
       Shift: TShiftState; X, Y: Integer);
     procedure StringGrid1DblClick(Sender: TObject);
+    procedure StringGrid1ContextPopup(Sender: TObject; MousePos: TPoint;
+      var Handled: Boolean);
+    procedure MenuCopyIPClick(Sender: TObject);
+    procedure MenuCopyPortClick(Sender: TObject);
+    procedure MenuRecheckServerClick(Sender: TObject);
+    procedure MenuSaveOvpnClick(Sender: TObject);
   private
+    FOvpnConfigs: TDictionary<string, string>; // IP -> декодированный .ovpn (заполняется при обновлении списка)
+    FContextRow: Integer;                      // Строка, по которой кликнули правой кнопкой (для контекстного меню)
+    FSortColumn: Integer;                      // Текущая колонка сортировки (-1 — нет)
+    FSortAscending: Boolean;                   // Направление текущей сортировки
     procedure SaveListToFile;
     procedure UpdateStats;
+    procedure UpdateSortHeaders;
+    procedure SaveOvpnForRow(ARow: Integer);
   public
     { Public declarations }
   end;
@@ -79,6 +100,32 @@ var
 implementation
 
 {$R *.dfm}
+
+const
+  // Базовые (без стрелки сортировки) подписи сортируемых колонок: 1 - IP, 2 - Порт, 3 - Страна
+  ColHeaderBase: array[1..3] of string = ('IP', 'Порт', 'Страна');
+
+// Сравнение IP-адресов по числовым октетам, а не как обычных строк
+// (иначе, например, "10.0.0.1" оказался бы "меньше" "9.0.0.1")
+function CompareIP(const A, B: string): Integer;
+var
+  PartsA, PartsB: TArray<string>;
+  i, VA, VB: Integer;
+begin
+  PartsA := A.Split(['.']);
+  PartsB := B.Split(['.']);
+  Result := 0;
+  for i := 0 to 3 do
+  begin
+    if i < Length(PartsA) then VA := StrToIntDef(PartsA[i], 0) else VA := 0;
+    if i < Length(PartsB) then VB := StrToIntDef(PartsB[i], 0) else VB := 0;
+    if VA <> VB then
+    begin
+      Result := VA - VB;
+      Exit;
+    end;
+  end;
+end;
 
 { TTCPCheckThread }
 
@@ -94,7 +141,7 @@ end;
 
 procedure TTCPCheckThread.UpdateUI;
 begin
-  // Безопасно обновляем статус в 5-й колонке (индекс 5) для конкретной строки
+  // Безопасно обновляем статус в 6-й колонке (индекс 5) для конкретной строки
   if FRowIndex < FForm.StringGrid1.RowCount then
     FForm.StringGrid1.Cells[5, FRowIndex] := FStatus;
 end;
@@ -139,11 +186,14 @@ begin
   StringGrid1.FixedRows := 1;
   StringGrid1.RowCount := 2;
 
+  FOvpnConfigs := TDictionary<string, string>.Create;
+  FContextRow := -1;
+  FSortColumn := -1;
+  FSortAscending := True;
+
   // Заголовки колонок
   StringGrid1.Cells[0, 0] := '№';
-  StringGrid1.Cells[1, 0] := 'IP';
-  StringGrid1.Cells[2, 0] := 'Порт';
-  StringGrid1.Cells[3, 0] := 'Страна';
+  UpdateSortHeaders; // задаёт IP/Порт/Страна (колонки 1-3, сортируемые кликом по шапке)
   StringGrid1.Cells[4, 0] := 'Протокол';
   StringGrid1.Cells[5, 0] := 'Статус';
 
@@ -158,6 +208,10 @@ begin
   StringGrid1.DoubleBuffered := True;
   StringGrid1.Options := StringGrid1.Options + [goRowSelect];
   StringGrid1.Options := StringGrid1.Options - [goEditing];
+  StringGrid1.PopupMenu := PopupMenu1;
+
+  SaveDialog1.DefaultExt := 'ovpn';
+  SaveDialog1.Filter := 'Конфигурация OpenVPN (*.ovpn)|*.ovpn|Все файлы (*.*)|*.*';
 
   FilePath := ExtractFilePath(ParamStr(0)) + 'servers.txt';
   if not FileExists(FilePath) then Exit;
@@ -199,6 +253,11 @@ begin
   end;
 
   UpdateStats;
+end;
+
+procedure TForm1.FormDestroy(Sender: TObject);
+begin
+  FOvpnConfigs.Free;
 end;
 
 procedure TForm1.FormResize(Sender: TObject);
@@ -378,7 +437,26 @@ begin
   StatusBar1.Panels[1].Text := 'Работает: ' + IntToStr(Working);
 end;
 
-
+// Отображает в шапке таблицы стрелку, указывающую текущую колонку и направление
+// сортировки (вверх/вниз). Символы стрелок заданы кодами (#9650/#9660), чтобы не
+// зависеть от кодировки исходного файла.
+procedure TForm1.UpdateSortHeaders;
+var
+  c: Integer;
+begin
+  for c := 1 to 3 do
+  begin
+    if c = FSortColumn then
+    begin
+      if FSortAscending then
+        StringGrid1.Cells[c, 0] := ColHeaderBase[c] + ' ' + Chr(9650)
+      else
+        StringGrid1.Cells[c, 0] := ColHeaderBase[c] + ' ' + Chr(9660);
+    end
+    else
+      StringGrid1.Cells[c, 0] := ColHeaderBase[c];
+  end;
+end;
 
 procedure TForm1.StringGrid1MouseDown(Sender: TObject; Button: TMouseButton;
   Shift: TShiftState; X, Y: Integer);
@@ -387,12 +465,29 @@ var
   i, j: Integer;
   TempRow: TArray<string>;
   Swapped: Boolean;
+  Direction: Integer;
 begin
+  if Button <> mbLeft then Exit;
+
   StringGrid1.MouseToCell(X, Y, ACol, ARow);
 
-  // Клик по шапке (строка 0) для колонок IP (1), Порт (2), Страна (3)
+  // Клик по шапке (строка 0) для колонок IP (1), Порт (2), Страна (3).
+  // Повторный клик по той же колонке меняет направление сортировки.
   if (ARow = 0) and (ACol >= 1) and (ACol <= 3) then
   begin
+    if FSortColumn = ACol then
+      FSortAscending := not FSortAscending
+    else
+    begin
+      FSortColumn := ACol;
+      FSortAscending := True;
+    end;
+
+    if FSortAscending then
+      Direction := 1
+    else
+      Direction := -1;
+
     SetLength(TempRow, StringGrid1.ColCount);
 
     repeat
@@ -401,10 +496,25 @@ begin
       begin
         if Trim(StringGrid1.Cells[1, i]) = '' then Break;
 
-        // Для порта (колонка 2) используем числовое сравнение
+        // Для порта (колонка 2) — числовое сравнение, для IP (1) — по октетам,
+        // для страны (3) — обычное текстовое сравнение
         if ACol = 2 then
         begin
-          if StrToIntDef(StringGrid1.Cells[ACol, i], 0) > StrToIntDef(StringGrid1.Cells[ACol, i + 1], 0) then
+          if (StrToIntDef(StringGrid1.Cells[ACol, i], 0) -
+              StrToIntDef(StringGrid1.Cells[ACol, i + 1], 0)) * Direction > 0 then
+          begin
+            for j := 0 to StringGrid1.ColCount - 1 do
+            begin
+              TempRow[j] := StringGrid1.Cells[j, i];
+              StringGrid1.Cells[j, i] := StringGrid1.Cells[j, i + 1];
+              StringGrid1.Cells[j, i + 1] := TempRow[j];
+            end;
+            Swapped := True;
+          end;
+        end
+        else if ACol = 1 then
+        begin
+          if CompareIP(StringGrid1.Cells[ACol, i], StringGrid1.Cells[ACol, i + 1]) * Direction > 0 then
           begin
             for j := 0 to StringGrid1.ColCount - 1 do
             begin
@@ -417,7 +527,7 @@ begin
         end
         else
         begin
-          if AnsiCompareText(StringGrid1.Cells[ACol, i], StringGrid1.Cells[ACol, i + 1]) > 0 then
+          if AnsiCompareText(StringGrid1.Cells[ACol, i], StringGrid1.Cells[ACol, i + 1]) * Direction > 0 then
           begin
             for j := 0 to StringGrid1.ColCount - 1 do
             begin
@@ -438,6 +548,95 @@ begin
         StringGrid1.Cells[0, i] := IntToStr(i)
       else
         StringGrid1.Cells[0, i] := '';
+    end;
+
+    UpdateSortHeaders;
+  end;
+end;
+
+// Определяет строку под курсором перед показом контекстного меню (ПКМ) и
+// отменяет показ меню, если клик пришелся на шапку или пустую область.
+procedure TForm1.StringGrid1ContextPopup(Sender: TObject; MousePos: TPoint;
+  var Handled: Boolean);
+var
+  ACol, ARow: Integer;
+  HasRow: Boolean;
+begin
+  StringGrid1.MouseToCell(MousePos.X, MousePos.Y, ACol, ARow);
+
+  if (ARow <= 0) or (ARow >= StringGrid1.RowCount) then
+  begin
+    Handled := True; // не показываем меню вне строк с данными
+    Exit;
+  end;
+
+  StringGrid1.Row := ARow;
+  FContextRow := ARow;
+
+  HasRow := Trim(StringGrid1.Cells[1, ARow]) <> '';
+  MenuCopyIP.Enabled := HasRow;
+  MenuCopyPort.Enabled := HasRow;
+  MenuRecheckServer.Enabled := HasRow;
+  MenuSaveOvpn.Enabled := HasRow;
+end;
+
+procedure TForm1.MenuCopyIPClick(Sender: TObject);
+begin
+  if (FContextRow > 0) and (FContextRow < StringGrid1.RowCount) then
+    Clipboard.AsText := StringGrid1.Cells[1, FContextRow];
+end;
+
+procedure TForm1.MenuCopyPortClick(Sender: TObject);
+begin
+  if (FContextRow > 0) and (FContextRow < StringGrid1.RowCount) then
+    Clipboard.AsText := StringGrid1.Cells[2, FContextRow];
+end;
+
+procedure TForm1.MenuRecheckServerClick(Sender: TObject);
+begin
+  if (FContextRow > 0) and (FContextRow < StringGrid1.RowCount) and
+     (Trim(StringGrid1.Cells[1, FContextRow]) <> '') then
+  begin
+    StringGrid1.Cells[5, FContextRow] := 'Проверка...';
+    TTCPCheckThread.Create(Self, FContextRow, StringGrid1.Cells[1, FContextRow],
+      StrToIntDef(StringGrid1.Cells[2, FContextRow], 443));
+  end;
+end;
+
+procedure TForm1.MenuSaveOvpnClick(Sender: TObject);
+begin
+  SaveOvpnForRow(FContextRow);
+end;
+
+// Сохраняет на диск декодированный .ovpn-конфиг сервера из строки ARow.
+// Конфигурация доступна только для серверов, полученных при последнем
+// обновлении списка (кнопка «Обновить») — именно тогда VPN Gate присылает
+// закодированный в base64 OpenVPN-конфиг, который мы декодируем и храним
+// в памяти для последующего экспорта.
+procedure TForm1.SaveOvpnForRow(ARow: Integer);
+var
+  IP, Cfg: string;
+begin
+  if (ARow <= 0) or (ARow >= StringGrid1.RowCount) then Exit;
+
+  IP := Trim(StringGrid1.Cells[1, ARow]);
+  if IP = '' then Exit;
+
+  if (FOvpnConfigs = nil) or (not FOvpnConfigs.TryGetValue(IP, Cfg)) or (Trim(Cfg) = '') then
+  begin
+    ShowMessage('Конфигурация .ovpn для ' + IP + ' недоступна. Сначала обновите список серверов кнопкой «Обновить».');
+    Exit;
+  end;
+
+  SaveDialog1.FileName := IP + '.ovpn';
+  if SaveDialog1.Execute then
+  begin
+    try
+      TFile.WriteAllText(SaveDialog1.FileName, Cfg, TEncoding.UTF8);
+      ShowMessage('Файл ' + ExtractFileName(SaveDialog1.FileName) + ' успешно сохранен.');
+    except
+      on E: Exception do
+        ShowMessage('Не удалось сохранить файл: ' + E.Message);
     end;
   end;
 end;
@@ -479,6 +678,7 @@ constructor TUpdateThread.Create(AForm: TForm1);
 begin
   FForm := AForm;
   FTempServers := TStringList.Create;
+  FTempOvpn := TDictionary<string, string>.Create;
   FSuccess := False;
   inherited Create(False);
   FreeOnTerminate := True;
@@ -487,6 +687,7 @@ end;
 destructor TUpdateThread.Destroy;
 begin
   FTempServers.Free;
+  FTempOvpn.Free;
   inherited;
 end;
 
@@ -513,7 +714,6 @@ begin
       begin
         FErrorMessage := E.Message;
         FSuccess := False;
-        Exit;
       end;
     end;
 
@@ -533,6 +733,7 @@ begin
           if Columns.Count > 5 then
             Country := Columns[5]; // Название страны
 
+          OVPN := '';
           try
             OVPN := TNetEncoding.Base64.Decode(Columns[14]);
             OVPNLines.Text := OVPN;
@@ -558,6 +759,10 @@ begin
 
           // Сохраняем во временный список: IP, Порт, Страна, Протокол, Статус
           FTempServers.Add(Columns[1] + ',' + PortStr + ',' + Country + ',TCP,Ожидание');
+
+          // Сохраняем декодированный OpenVPN-конфиг для последующего экспорта в .ovpn
+          if (OVPN <> '') and (Trim(Columns[1]) <> '') then
+            FTempOvpn.AddOrSetValue(Columns[1], OVPN);
         end;
       end;
     end;
@@ -568,6 +773,8 @@ begin
     OVPNLines.Free;
   end;
 
+  // Безопасно передаем данные в главный поток для отрисовки (выполняется всегда,
+  // в том числе при ошибке загрузки, чтобы скрыть прогресс-бар и показать причину)
   Synchronize(UpdateUI);
 end;
 
@@ -606,6 +813,16 @@ begin
       FForm.StringGrid1.Cells[5, RowIdx] := Cols[4];          // Статус
     end;
   end;
+
+  // Передаем свежесобранный словарь .ovpn-конфигов форме (используется контекстным
+  // меню «Сохранить .ovpn файл») и освобождаем предыдущий
+  FreeAndNil(FForm.FOvpnConfigs);
+  FForm.FOvpnConfigs := FTempOvpn;
+  FTempOvpn := nil;
+
+  // Свежий список ещё не отсортирован — сбрасываем стрелку в шапке таблицы
+  FForm.FSortColumn := -1;
+  FForm.UpdateSortHeaders;
 
   FForm.SaveListToFile;
   FForm.UpdateStats;
