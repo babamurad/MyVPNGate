@@ -81,9 +81,7 @@ object Form1: TForm1
     ColCount = 4
     RowCount = 2
     Options = [goFixedVertLine, goFixedHorzLine, goVertLine, goHorzLine, goRangeSelect, goRowSelect, goFixedRowDefAlign]
-    PopupMenu = PopupMenu1
     TabOrder = 1
-    OnContextPopup = StringGrid1ContextPopup
     OnDblClick = StringGrid1DblClick
     OnMouseDown = StringGrid1MouseDown
     ExplicitWidth = 994

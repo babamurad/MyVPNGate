@@ -75,8 +75,6 @@ type
     procedure StringGrid1MouseDown(Sender: TObject; Button: TMouseButton;
       Shift: TShiftState; X, Y: Integer);
     procedure StringGrid1DblClick(Sender: TObject);
-    procedure StringGrid1ContextPopup(Sender: TObject; MousePos: TPoint;
-      var Handled: Boolean);
     procedure MenuCopyIPClick(Sender: TObject);
     procedure MenuCopyPortClick(Sender: TObject);
     procedure MenuRecheckServerClick(Sender: TObject);
@@ -219,7 +217,9 @@ begin
   StringGrid1.DoubleBuffered := True;
   StringGrid1.Options := StringGrid1.Options + [goRowSelect];
   StringGrid1.Options := StringGrid1.Options - [goEditing];
-  StringGrid1.PopupMenu := PopupMenu1;
+  // PopupMenu1 намеренно НЕ назначается через StringGrid1.PopupMenu — меню
+  // показывается вручную из StringGrid1MouseDown (см. там), чтобы не зависеть
+  // от WM_CONTEXTMENU/OnContextPopup и не показать его дважды.
 
   SaveDialog1.DefaultExt := 'ovpn';
   SaveDialog1.Filter := 'Конфигурация OpenVPN (*.ovpn)|*.ovpn|Все файлы (*.*)|*.*';
@@ -487,10 +487,38 @@ var
   Swapped: Boolean;
   Direction, Cmp: Integer;
   Va, Vb: Double;
+  HasRow: Boolean;
+  ScreenPt: TPoint;
 begin
-  if Button <> mbLeft then Exit;
-
   StringGrid1.MouseToCell(X, Y, ACol, ARow);
+
+  // Правая кнопка — показываем контекстное меню сами, по нажатию мыши.
+  // Раньше это делалось через OnContextPopup (реагирует на WM_CONTEXTMENU),
+  // но в некоторых конфигурациях VCL это сообщение до грида не доходит
+  // вовсе, и ни выделение строки, ни меню не появлялись. OnMouseDown
+  // срабатывает всегда, поэтому теперь используем только его.
+  if Button = mbRight then
+  begin
+    if (ARow <= 0) or (ARow >= StringGrid1.RowCount) then Exit;
+
+    StringGrid1.Row := ARow;
+    FContextRow := ARow;
+
+    HasRow := Trim(StringGrid1.Cells[1, ARow]) <> '';
+    MenuCopyIP.Enabled := HasRow;
+    MenuCopyPort.Enabled := HasRow;
+    MenuRecheckServer.Enabled := HasRow;
+    MenuSaveOvpn.Enabled := HasRow;
+
+    // X, Y в OnMouseDown — координаты относительно самого грида (клиентские),
+    // а Popup ждёт экранные — переводим через ClientToScreen.
+    ScreenPt := StringGrid1.ClientToScreen(Point(X, Y));
+    PopupMenu1.PopupComponent := StringGrid1;
+    PopupMenu1.Popup(ScreenPt.X, ScreenPt.Y);
+    Exit;
+  end;
+
+  if Button <> mbLeft then Exit;
 
   // Клик по шапке (строка 0) для колонок IP (1), Порт (2), Страна (3),
   // Пинг (4) и Скорость (5). Повторный клик по той же колонке меняет
@@ -560,46 +588,6 @@ begin
 
     UpdateSortHeaders;
   end;
-end;
-
-// Определяет строку под курсором перед показом контекстного меню (ПКМ) и
-// отменяет показ меню, если клик пришелся на шапку или пустую область.
-procedure TForm1.StringGrid1ContextPopup(Sender: TObject; MousePos: TPoint;
-  var Handled: Boolean);
-var
-  ClientPos: TPoint;
-  ACol, ARow: Integer;
-  HasRow: Boolean;
-begin
-  // MousePos приходит в экранных координатах (так его передаёт VCL из
-  // WM_CONTEXTMENU), а MouseToCell ждёт координаты относительно самого
-  // StringGrid1 — без этого преобразования ARow/ACol получались случайными,
-  // и меню либо не показывалось вовсе, либо появлялось не для той строки.
-  ClientPos := StringGrid1.ScreenToClient(MousePos);
-  StringGrid1.MouseToCell(ClientPos.X, ClientPos.Y, ACol, ARow);
-
-  if (ARow <= 0) or (ARow >= StringGrid1.RowCount) then
-  begin
-    Handled := True; // не показываем меню вне строк с данными
-    Exit;
-  end;
-
-  StringGrid1.Row := ARow;
-  FContextRow := ARow;
-
-  HasRow := Trim(StringGrid1.Cells[1, ARow]) <> '';
-  MenuCopyIP.Enabled := HasRow;
-  MenuCopyPort.Enabled := HasRow;
-  MenuRecheckServer.Enabled := HasRow;
-  MenuSaveOvpn.Enabled := HasRow;
-
-  // Показываем меню вручную вместо того, чтобы полагаться на автоматический
-  // показ через свойство PopupMenu — на части систем/версий VCL он почему-то
-  // не срабатывает, хотя выбор строки при этом происходит корректно.
-  // MousePos тут ещё в экранных координатах — то, что и нужно для Popup.
-  PopupMenu1.PopupComponent := StringGrid1;
-  PopupMenu1.Popup(MousePos.X, MousePos.Y);
-  Handled := True; // меню уже показано нами — не даём VCL показать его повторно
 end;
 
 procedure TForm1.MenuCopyIPClick(Sender: TObject);
