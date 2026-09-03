@@ -1,0 +1,48 @@
+# VPN Client VPN Connection Setting File
+# ????????????? MyVPNGate
+
+declare root
+{
+        bool CheckServerCert false
+        uint64 CreateDateTime 0
+        uint64 LastConnectDateTime 0
+        bool StartupAccount false
+        uint64 UpdateDateTime 0
+
+        declare ClientAuth
+        {
+                uint AuthType 1
+                byte HashedPassword H8N7rT8BH44q0nFXC9NlFxetGzQ=
+                string Username vpn
+        }
+        declare ClientOption
+        {
+                string AccountName MyVPNGateQuick
+                uint AdditionalConnectionInterval 1
+                uint ConnectionDisconnectSpan 0
+                string DeviceName VPN
+                bool DisableQoS false
+                bool HalfConnection false
+                bool HideNicInfoWindow false
+                bool HideStatusWindow false
+                string Hostname 126.28.236.144/tcp
+                string HubName VPNGATE
+                uint MaxConnection 1
+                bool NoRoutingTracking false
+                bool NoTls1 false
+                bool NoUdpAcceleration false
+                uint NumRetry 4294967295
+                uint Port 443
+                uint PortUDP 0
+                string ProxyName $
+                byte ProxyPassword $
+                uint ProxyPort 0
+                uint ProxyType 0
+                string ProxyUsername $
+                bool RequireBridgeRoutingMode false
+                bool RequireMonitorMode false
+                uint RetryInterval 15
+                bool UseCompress false
+                bool UseEncrypt true
+        }
+}
