@@ -1087,6 +1087,7 @@ end;
 procedure TForm1.MenuConnectSoftEtherClick(Sender: TObject);
 var
   IP: string;
+  Port: Integer;
 begin
   if (FContextRow <= 0) or (FContextRow >= StringGrid1.RowCount) then Exit;
   IP := Trim(StringGrid1.Cells[1, FContextRow]);
@@ -1102,9 +1103,13 @@ begin
     Exit;
   end;
 
-  // Порт 443 — стандартный порт нативного протокола SoftEther у
-  // публичных узлов VPN Gate (не тот "Порт", что в таблице — тот для OpenVPN)
-  TSoftEtherThread.Create(Self, seaConnect, IP, 443);
+  // Порт из таблицы (тот же, что и для OpenVPN) — на практике публичные узлы
+  // VPN Gate слушают нативный протокол SoftEther на том же порту, что и
+  // OpenVPN (одно и то же соединение определяет протокол по первым байтам).
+  // Фиксированный 443 подходит не всегда — подтверждено на практике: с ним
+  // подключение к части серверов не проходит, а с их собственным портом — да.
+  Port := StrToIntDef(StringGrid1.Cells[2, FContextRow], 443);
+  TSoftEtherThread.Create(Self, seaConnect, IP, Port);
 end;
 
 procedure TForm1.MenuDisconnectSoftEtherClick(Sender: TObject);
