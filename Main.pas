@@ -9,7 +9,7 @@ uses
   Clipbrd, System.NetEncoding,
   System.Net.URLClient, System.Net.HttpClient, System.Net.HttpClientComponent,
   Vcl.ComCtrls, System.ImageList, Vcl.ImgList, Vcl.Menus,
-  System.Generics.Collections, System.IOUtils;
+  System.Generics.Collections, System.IOUtils, Winapi.ShellAPI;
 
 type
   TForm1 = class; // Предварительное объявление
@@ -116,6 +116,7 @@ type
     procedure SaveOvpnForRow(ARow: Integer);
     function LocateVpnCmd: string;
     procedure SetVpnStatusText(const S: string);
+    function EnsureElevatedForSoftEther: Boolean;
   public
     { Public declarations }
   end;
@@ -261,6 +262,48 @@ begin
   end
   else
     Output := RawOutput;
+end;
+
+// Настройка VPN-подключения через vpncmd (даже к уже существующему аккаунту)
+// требует повышенных прав — без них AccountCreate/AccountSet у SoftEther
+// Client Service молча ничего не сохраняют. Проверяем реальную elevation
+// текущего процесса через его токен доступа (а не просто членство в группе
+// администраторов — оно не отражает, повышен ли токен сейчас).
+function IsRunningElevated: Boolean;
+var
+  TokenHandle: THandle;
+  Elevation: TTokenElevation;
+  ReturnLength: DWORD;
+begin
+  Result := False;
+  if OpenProcessToken(GetCurrentProcess, TOKEN_QUERY, TokenHandle) then
+  begin
+    try
+      if GetTokenInformation(TokenHandle, TokenElevation, @Elevation, SizeOf(Elevation), ReturnLength) then
+        Result := Elevation.TokenIsElevated <> 0;
+    finally
+      CloseHandle(TokenHandle);
+    end;
+  end;
+end;
+
+// Перезапускает саму программу от имени администратора (через UAC-запрос
+// "runas") и завершает текущий, неповышенный процесс. Если пользователь
+// отменит запрос UAC, ShellExecuteEx вернёт False и ничего не произойдёт —
+// текущий процесс продолжает работать как есть.
+procedure RelaunchElevated;
+var
+  SEI: TShellExecuteInfo;
+begin
+  FillChar(SEI, SizeOf(SEI), 0);
+  SEI.cbSize := SizeOf(SEI);
+  SEI.fMask := SEE_MASK_DEFAULT;
+  SEI.lpVerb := 'runas';
+  SEI.lpFile := PChar(ParamStr(0));
+  SEI.lpDirectory := PChar(ExtractFilePath(ParamStr(0)));
+  SEI.nShow := SW_SHOWNORMAL;
+  if ShellExecuteEx(@SEI) then
+    Application.Terminate;
 end;
 
 { TSoftEtherThread }
@@ -957,6 +1000,21 @@ begin
   end;
 end;
 
+// Настройка аккаунта SoftEther через vpncmd требует повышенных прав — без
+// них AccountCreate/AccountSet отрабатывают "успешно", но по факту ничего
+// не сохраняют. Если прав нет, один раз предлагаем перезапуститься через UAC.
+function TForm1.EnsureElevatedForSoftEther: Boolean;
+begin
+  Result := IsRunningElevated;
+  if not Result then
+  begin
+    if MessageDlg('Настройка подключения SoftEther требует прав администратора. ' +
+         'Перезапустить программу от имени администратора?',
+         mtConfirmation, [mbYes, mbNo], 0) = mrYes then
+      RelaunchElevated; // при согласии текущий процесс завершится сам
+  end;
+end;
+
 procedure TForm1.MenuConnectSoftEtherClick(Sender: TObject);
 var
   IP: string;
@@ -964,6 +1022,8 @@ begin
   if (FContextRow <= 0) or (FContextRow >= StringGrid1.RowCount) then Exit;
   IP := Trim(StringGrid1.Cells[1, FContextRow]);
   if IP = '' then Exit;
+
+  if not EnsureElevatedForSoftEther then Exit;
 
   if FVpnCmdPath = '' then
     FVpnCmdPath := LocateVpnCmd;
@@ -973,13 +1033,15 @@ begin
     Exit;
   end;
 
-  // Порт 1443/443 — стандартный порт нативного протокола SoftEther у
+  // Порт 443 — стандартный порт нативного протокола SoftEther у
   // публичных узлов VPN Gate (не тот "Порт", что в таблице — тот для OpenVPN)
   TSoftEtherThread.Create(Self, seaConnect, IP, 443);
 end;
 
 procedure TForm1.MenuDisconnectSoftEtherClick(Sender: TObject);
 begin
+  if not EnsureElevatedForSoftEther then Exit;
+
   if FVpnCmdPath = '' then
     FVpnCmdPath := LocateVpnCmd;
   if FVpnCmdPath = '' then Exit;
