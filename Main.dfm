@@ -98,6 +98,9 @@ object Form1: TForm1
       end
       item
         Width = 100
+      end
+      item
+        Width = 300
       end>
     ExplicitLeft = 448
     ExplicitTop = 312
@@ -670,9 +673,21 @@ object Form1: TForm1
       Caption = #1057#1086#1093#1088#1072#1085#1080#1090#1100' .ovpn '#1092#1072#1081#1083'...'
       OnClick = MenuSaveOvpnClick
     end
+    object MenuConnectSoftEther: TMenuItem
+      Caption = #1055#1086#1076#1082#1083#1102#1095#1080#1090#1100#1089#1103' '#1095#1077#1088#1077#1079' SoftEther'
+      OnClick = MenuConnectSoftEtherClick
+    end
+    object MenuDisconnectSoftEther: TMenuItem
+      Caption = #1054#1090#1082#1083#1102#1095#1080#1090#1100' SoftEther VPN'
+      OnClick = MenuDisconnectSoftEtherClick
+    end
   end
   object SaveDialog1: TSaveDialog
     Left = 760
     Top = 336
+  end
+  object OpenDialog1: TOpenDialog
+    Left = 664
+    Top = 200
   end
 end

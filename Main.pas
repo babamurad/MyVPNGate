@@ -45,6 +45,26 @@ type
     destructor Destroy; override;
   end;
 
+  TSoftEtherAction = (seaConnect, seaDisconnect);
+
+  // Поток, который настраивает и подключает/отключает соединение SoftEther
+  // через утилиту vpncmd.exe (управляет уже установленным SoftEther VPN
+  // Client), не блокируя интерфейс — каждый вызов vpncmd — это отдельный
+  // внешний процесс, который может занять секунду и больше.
+  TSoftEtherThread = class(TThread)
+  private
+    FForm: TForm1;
+    FAction: TSoftEtherAction;
+    FServerIP: string;
+    FServerPort: Integer;
+    FStatusText: string;
+    procedure SyncStatus;
+  protected
+    procedure Execute; override;
+  public
+    constructor Create(AForm: TForm1; AAction: TSoftEtherAction; const AServerIP: string; AServerPort: Integer);
+  end;
+
   TForm1 = class(TForm)
     Panel1: TPanel;
     Button1: TButton;
@@ -60,7 +80,10 @@ type
     MenuCopyPort: TMenuItem;
     MenuRecheckServer: TMenuItem;
     MenuSaveOvpn: TMenuItem;
+    MenuConnectSoftEther: TMenuItem;
+    MenuDisconnectSoftEther: TMenuItem;
     SaveDialog1: TSaveDialog;
+    OpenDialog1: TOpenDialog;
     procedure Button1Click(Sender: TObject);
     procedure Button2Click(Sender: TObject);
     procedure Button3Click(Sender: TObject);
@@ -79,15 +102,20 @@ type
     procedure MenuCopyPortClick(Sender: TObject);
     procedure MenuRecheckServerClick(Sender: TObject);
     procedure MenuSaveOvpnClick(Sender: TObject);
+    procedure MenuConnectSoftEtherClick(Sender: TObject);
+    procedure MenuDisconnectSoftEtherClick(Sender: TObject);
   private
     FOvpnConfigs: TDictionary<string, string>; // IP -> декодированный .ovpn (заполняется при обновлении списка)
     FContextRow: Integer;                      // Строка, по которой кликнули правой кнопкой (для контекстного меню)
     FSortColumn: Integer;                      // Текущая колонка сортировки (-1 — нет)
     FSortAscending: Boolean;                   // Направление текущей сортировки
+    FVpnCmdPath: string;                       // Путь к vpncmd.exe (SoftEther VPN Client), находится один раз
     procedure SaveListToFile;
     procedure UpdateStats;
     procedure UpdateSortHeaders;
     procedure SaveOvpnForRow(ARow: Integer);
+    function LocateVpnCmd: string;
+    procedure SetVpnStatusText(const S: string);
   public
     { Public declarations }
   end;
@@ -124,6 +152,190 @@ begin
       Exit;
     end;
   end;
+end;
+
+const
+  // Настройки автоматического подключения через SoftEther (публичные узлы
+  // VPN Gate работают через фиксированный хаб и служебную пару логин/пароль)
+  SoftEtherHubName = 'VPNGATE';
+  SoftEtherUser = 'vpn';
+  SoftEtherPassword = 'vpn';
+  SoftEtherAccountName = 'MyVPNGateQuick'; // одно и то же имя переиспользуется под любой сервер
+  SoftEtherNicName = 'VPN'; // имя виртуального адаптера по умолчанию у SoftEther VPN Client Manager
+  VpnCmdPathCacheFile = 'vpncmd_path.txt';
+
+// Запускает внешний процесс, скрыто (без окна), и возвращает весь его
+// стандартный вывод (stdout+stderr) одной строкой. Используется для вызова
+// vpncmd.exe — своего готового аналога в VCL (наподобие TProcess) нет,
+// поэтому напрямую через WinAPI (CreateProcess + анонимный pipe).
+function RunProcessCapture(const CommandLine: string; TimeoutMs: Cardinal; out Output: string): Boolean;
+var
+  SecurityAttr: TSecurityAttributes;
+  StdOutRead, StdOutWrite: THandle;
+  StartupInfo: TStartupInfo;
+  ProcessInfo: TProcessInformation;
+  Buffer: array[0..4095] of AnsiChar;
+  BytesRead: DWORD;
+  CmdLine: string;
+  WaitResult: DWORD;
+begin
+  Result := False;
+  Output := '';
+  StdOutWrite := 0;
+
+  FillChar(SecurityAttr, SizeOf(SecurityAttr), 0);
+  SecurityAttr.nLength := SizeOf(SecurityAttr);
+  SecurityAttr.bInheritHandle := True;
+
+  if not CreatePipe(StdOutRead, StdOutWrite, @SecurityAttr, 0) then Exit;
+  try
+    SetHandleInformation(StdOutRead, HANDLE_FLAG_INHERIT, 0);
+
+    FillChar(StartupInfo, SizeOf(StartupInfo), 0);
+    StartupInfo.cb := SizeOf(StartupInfo);
+    StartupInfo.dwFlags := STARTF_USESTDHANDLES or STARTF_USESHOWWINDOW;
+    StartupInfo.wShowWindow := SW_HIDE;
+    StartupInfo.hStdOutput := StdOutWrite;
+    StartupInfo.hStdError := StdOutWrite;
+    StartupInfo.hStdInput := 0;
+
+    CmdLine := CommandLine;
+    UniqueString(CmdLine); // CreateProcess требует изменяемый буфер
+
+    if not CreateProcess(nil, PChar(CmdLine), nil, nil, True,
+         CREATE_NO_WINDOW, nil, nil, StartupInfo, ProcessInfo) then
+      Exit;
+
+    CloseHandle(StdOutWrite);
+    StdOutWrite := 0;
+
+    repeat
+      if not ReadFile(StdOutRead, Buffer, SizeOf(Buffer) - 1, BytesRead, nil) or (BytesRead = 0) then
+        Break;
+      Buffer[BytesRead] := #0;
+      Output := Output + string(AnsiString(PAnsiChar(@Buffer[0])));
+    until False;
+
+    WaitResult := WaitForSingleObject(ProcessInfo.hProcess, TimeoutMs);
+    if WaitResult <> WAIT_OBJECT_0 then
+      TerminateProcess(ProcessInfo.hProcess, 1);
+    Result := True;
+
+    CloseHandle(ProcessInfo.hProcess);
+    CloseHandle(ProcessInfo.hThread);
+  finally
+    if StdOutWrite <> 0 then CloseHandle(StdOutWrite);
+    CloseHandle(StdOutRead);
+  end;
+end;
+
+// Вызывает "vpncmd.exe localhost /CLIENT /CMD <Args>" — управление локально
+// установленным и уже запущенным SoftEther VPN Client.
+function RunVpnCmd(const VpnCmdExe, Args: string; out Output: string): Boolean;
+begin
+  Result := RunProcessCapture('"' + VpnCmdExe + '" localhost /CLIENT /CMD ' + Args, 15000, Output);
+end;
+
+{ TSoftEtherThread }
+
+constructor TSoftEtherThread.Create(AForm: TForm1; AAction: TSoftEtherAction;
+  const AServerIP: string; AServerPort: Integer);
+begin
+  inherited Create(False);
+  FreeOnTerminate := True;
+  FForm := AForm;
+  FAction := AAction;
+  FServerIP := AServerIP;
+  FServerPort := AServerPort;
+end;
+
+procedure TSoftEtherThread.SyncStatus;
+begin
+  FForm.SetVpnStatusText(FStatusText);
+end;
+
+procedure TSoftEtherThread.Execute;
+var
+  Output, LowerOutput: string;
+  Attempt: Integer;
+  Connected, Failed: Boolean;
+begin
+  if FForm.FVpnCmdPath = '' then
+  begin
+    FStatusText := 'VPN: vpncmd.exe не найден';
+    Synchronize(SyncStatus);
+    Exit;
+  end;
+
+  if FAction = seaDisconnect then
+  begin
+    FStatusText := 'VPN: отключение...';
+    Synchronize(SyncStatus);
+    RunVpnCmd(FForm.FVpnCmdPath, 'AccountDisconnect ' + SoftEtherAccountName, Output);
+    FStatusText := 'VPN: отключено';
+    Synchronize(SyncStatus);
+    Exit;
+  end;
+
+  // seaConnect
+  FStatusText := 'VPN: настройка подключения к ' + FServerIP + '...';
+  Synchronize(SyncStatus);
+
+  // На случай, если уже была активна предыдущая попытка/сессия
+  RunVpnCmd(FForm.FVpnCmdPath, 'AccountDisconnect ' + SoftEtherAccountName, Output);
+
+  // Пробуем обновить уже существующий аккаунт под новый сервер; если его ещё
+  // нет — создаём. AccountSet возвращает ошибку, если аккаунта не существует.
+  if not RunVpnCmd(FForm.FVpnCmdPath, Format(
+       'AccountSet %s /SERVER:%s:%d /HUB:%s /USERNAME:%s /NICNAME:%s',
+       [SoftEtherAccountName, FServerIP, FServerPort, SoftEtherHubName, SoftEtherUser, SoftEtherNicName]),
+       Output)
+     or (Pos('error', LowerCase(Output)) > 0) then
+  begin
+    RunVpnCmd(FForm.FVpnCmdPath, Format(
+      'AccountCreate %s /SERVER:%s:%d /HUB:%s /USERNAME:%s /NICNAME:%s',
+      [SoftEtherAccountName, FServerIP, FServerPort, SoftEtherHubName, SoftEtherUser, SoftEtherNicName]),
+      Output);
+  end;
+
+  RunVpnCmd(FForm.FVpnCmdPath, Format('AccountPasswordSet %s /PASSWORD:%s /TYPE:standard',
+    [SoftEtherAccountName, SoftEtherPassword]), Output);
+
+  RunVpnCmd(FForm.FVpnCmdPath, 'AccountConnect ' + SoftEtherAccountName, Output);
+
+  FStatusText := 'VPN: подключение к ' + FServerIP + '...';
+  Synchronize(SyncStatus);
+
+  Connected := False;
+  Failed := False;
+  for Attempt := 1 to 20 do // ждём подключения до ~20 секунд
+  begin
+    Sleep(1000);
+    RunVpnCmd(FForm.FVpnCmdPath, 'AccountStatusGet ' + SoftEtherAccountName, Output);
+    LowerOutput := LowerCase(Output);
+
+    // "disconnected" тоже содержит подстроку "connected" — проверяем его первым
+    if (Pos('disconnected', LowerOutput) = 0) and (Pos('connected', LowerOutput) > 0) then
+    begin
+      Connected := True;
+      Break;
+    end;
+
+    if (Pos('error occurred', LowerOutput) > 0) or (Pos('connection failed', LowerOutput) > 0) then
+    begin
+      Failed := True;
+      Break;
+    end;
+  end;
+
+  if Connected then
+    FStatusText := 'VPN: подключено к ' + FServerIP
+  else if Failed then
+    FStatusText := 'VPN: ошибка подключения к ' + FServerIP
+  else
+    FStatusText := 'VPN: не удалось подключиться за отведённое время';
+
+  Synchronize(SyncStatus);
 end;
 
 { TTCPCheckThread }
@@ -197,6 +409,7 @@ begin
   FContextRow := -1;
   FSortColumn := -1;
   FSortAscending := True;
+  FVpnCmdPath := ''; // находим лениво, при первом обращении к SoftEther
 
   // Заголовки колонок
   StringGrid1.Cells[0, 0] := '№';
@@ -223,6 +436,9 @@ begin
 
   SaveDialog1.DefaultExt := 'ovpn';
   SaveDialog1.Filter := 'Конфигурация OpenVPN (*.ovpn)|*.ovpn|Все файлы (*.*)|*.*';
+
+  OpenDialog1.Filter := 'vpncmd.exe|vpncmd.exe|Все файлы (*.*)|*.*';
+  OpenDialog1.Title := 'Укажите путь к vpncmd.exe (SoftEther VPN Client)';
 
   FilePath := ExtractFilePath(ParamStr(0)) + 'servers.txt';
   if not FileExists(FilePath) then Exit;
@@ -509,6 +725,7 @@ begin
     MenuCopyPort.Enabled := HasRow;
     MenuRecheckServer.Enabled := HasRow;
     MenuSaveOvpn.Enabled := HasRow;
+    MenuConnectSoftEther.Enabled := HasRow;
 
     // X, Y в OnMouseDown — координаты относительно самого грида (клиентские),
     // а Popup ждёт экранные — переводим через ClientToScreen.
@@ -649,6 +866,97 @@ begin
         ShowMessage('Не удалось сохранить файл: ' + E.Message);
     end;
   end;
+end;
+
+// Показывает текст в третьей панели статус-бара (статус SoftEther-подключения)
+procedure TForm1.SetVpnStatusText(const S: string);
+begin
+  if StatusBar1.Panels.Count > 2 then
+    StatusBar1.Panels[2].Text := S;
+end;
+
+// Находит vpncmd.exe (утилита управления SoftEther VPN Client): сначала
+// проверяет путь, сохранённый при прошлом запуске, затем стандартные пути
+// установки, и только если не нашла — один раз спрашивает пользователя и
+// запоминает выбранный путь на будущее.
+function TForm1.LocateVpnCmd: string;
+const
+  CommonPaths: array[0..1] of string = (
+    'C:\Program Files\SoftEther VPN Client\vpncmd.exe',
+    'C:\Program Files (x86)\SoftEther VPN Client\vpncmd.exe'
+  );
+var
+  CacheFile, Candidate: string;
+  SL: TStringList;
+  i: Integer;
+begin
+  Result := '';
+
+  CacheFile := ExtractFilePath(ParamStr(0)) + VpnCmdPathCacheFile;
+  if FileExists(CacheFile) then
+  begin
+    SL := TStringList.Create;
+    try
+      SL.LoadFromFile(CacheFile);
+      if SL.Count > 0 then
+      begin
+        Candidate := Trim(SL[0]);
+        if (Candidate <> '') and FileExists(Candidate) then
+          Exit(Candidate);
+      end;
+    finally
+      SL.Free;
+    end;
+  end;
+
+  for i := 0 to High(CommonPaths) do
+    if FileExists(CommonPaths[i]) then
+      Exit(CommonPaths[i]);
+
+  if MessageDlg('Не найден vpncmd.exe (утилита SoftEther VPN Client). Указать путь к нему вручную?',
+       mtConfirmation, [mbYes, mbNo], 0) = mrYes then
+  begin
+    if OpenDialog1.Execute then
+    begin
+      Result := OpenDialog1.FileName;
+      SL := TStringList.Create;
+      try
+        SL.Add(Result);
+        SL.SaveToFile(CacheFile);
+      finally
+        SL.Free;
+      end;
+    end;
+  end;
+end;
+
+procedure TForm1.MenuConnectSoftEtherClick(Sender: TObject);
+var
+  IP: string;
+begin
+  if (FContextRow <= 0) or (FContextRow >= StringGrid1.RowCount) then Exit;
+  IP := Trim(StringGrid1.Cells[1, FContextRow]);
+  if IP = '' then Exit;
+
+  if FVpnCmdPath = '' then
+    FVpnCmdPath := LocateVpnCmd;
+  if FVpnCmdPath = '' then
+  begin
+    ShowMessage('Без vpncmd.exe автоматическое подключение через SoftEther недоступно.');
+    Exit;
+  end;
+
+  // Порт 1443/443 — стандартный порт нативного протокола SoftEther у
+  // публичных узлов VPN Gate (не тот "Порт", что в таблице — тот для OpenVPN)
+  TSoftEtherThread.Create(Self, seaConnect, IP, 443);
+end;
+
+procedure TForm1.MenuDisconnectSoftEtherClick(Sender: TObject);
+begin
+  if FVpnCmdPath = '' then
+    FVpnCmdPath := LocateVpnCmd;
+  if FVpnCmdPath = '' then Exit;
+  TSoftEtherThread.Create(Self, seaDisconnect, '', 0);
 end;
 
 procedure TForm1.NetHTTPClient1ValidateServerCertificate(const Sender: TObject;
