@@ -83,6 +83,7 @@ object Form1: TForm1
     Options = [goFixedVertLine, goFixedHorzLine, goVertLine, goHorzLine, goRangeSelect, goRowSelect, goFixedRowDefAlign]
     TabOrder = 1
     OnDblClick = StringGrid1DblClick
+    OnDrawCell = StringGrid1DrawCell
     OnMouseDown = StringGrid1MouseDown
     ExplicitWidth = 994
     ExplicitHeight = 450
