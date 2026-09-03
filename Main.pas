@@ -58,7 +58,9 @@ type
     FServerIP: string;
     FServerPort: Integer;
     FStatusText: string;
+    FConnectedIP: string; // IP сервера, который нужно (пере)отметить подключённым в таблице ('' — снять отметку)
     procedure SyncStatus;
+    procedure SyncConnectedIP;
   protected
     procedure Execute; override;
   public
@@ -110,12 +112,14 @@ type
     FSortColumn: Integer;                      // Текущая колонка сортировки (-1 — нет)
     FSortAscending: Boolean;                   // Направление текущей сортировки
     FVpnCmdPath: string;                       // Путь к vpncmd.exe (SoftEther VPN Client), находится один раз
+    FConnectedServerIP: string;                // IP сервера, к которому сейчас поднято SoftEther-подключение ('' — нет)
     procedure SaveListToFile;
     procedure UpdateStats;
     procedure UpdateSortHeaders;
     procedure SaveOvpnForRow(ARow: Integer);
     function LocateVpnCmd: string;
     procedure SetVpnStatusText(const S: string);
+    procedure SetConnectedServerIP(const IP: string);
     function EnsureElevatedForSoftEther: Boolean;
   public
     { Public declarations }
@@ -385,6 +389,11 @@ begin
   FForm.SetVpnStatusText(FStatusText);
 end;
 
+procedure TSoftEtherThread.SyncConnectedIP;
+begin
+  FForm.SetConnectedServerIP(FConnectedIP);
+end;
+
 procedure TSoftEtherThread.Execute;
 var
   Output, LowerOutput, ConfigPath: string;
@@ -405,10 +414,16 @@ begin
     RunVpnCmd(FForm.FVpnCmdPath, 'AccountDisconnect ' + SoftEtherAccountName, Output);
     FStatusText := 'VPN: отключено';
     Synchronize(SyncStatus);
+    FConnectedIP := '';
+    Synchronize(SyncConnectedIP);
     Exit;
   end;
 
-  // seaConnect
+  // seaConnect — прежняя сессия (если была) сейчас будет разорвана, снимаем
+  // отметку с той строки сразу, не дожидаясь результата новой попытки
+  FConnectedIP := '';
+  Synchronize(SyncConnectedIP);
+
   FStatusText := 'VPN: настройка подключения к ' + FServerIP + '...';
   Synchronize(SyncStatus);
 
@@ -468,7 +483,11 @@ begin
   end;
 
   if Connected then
-    FStatusText := 'VPN: подключено к ' + FServerIP
+  begin
+    FStatusText := 'VPN: подключено к ' + FServerIP;
+    FConnectedIP := FServerIP;
+    Synchronize(SyncConnectedIP);
+  end
   else if Failed then
     FStatusText := 'VPN: ошибка подключения к ' + FServerIP
   else
@@ -549,6 +568,7 @@ begin
   FSortColumn := -1;
   FSortAscending := True;
   FVpnCmdPath := ''; // находим лениво, при первом обращении к SoftEther
+  FConnectedServerIP := '';
 
   // Заголовки колонок
   StringGrid1.Cells[0, 0] := '№';
@@ -757,11 +777,22 @@ end;
 
 procedure TForm1.StringGrid1DrawCell(Sender: TObject; ACol, ARow: Integer;
   Rect: TRect; State: TGridDrawState);
+var
+  IsConnectedRow: Boolean;
+  CellText: string;
 begin
   if ARow = 0 then Exit;
 
+  // Строка сервера, к которому сейчас поднято SoftEther-подключение —
+  // сверяем по IP (колонка 1), а не по номеру строки, чтобы отметка не
+  // "слетала" при сортировке/обновлении списка.
+  IsConnectedRow := (FConnectedServerIP <> '') and
+    (Trim(StringGrid1.Cells[1, ARow]) = FConnectedServerIP);
+
   if gdSelected in State then
     StringGrid1.Canvas.Brush.Color := $003A3A3A
+  else if IsConnectedRow then
+    StringGrid1.Canvas.Brush.Color := $00335522 // подсветка активного VPN-подключения
   else if ARow mod 2 = 0 then
     StringGrid1.Canvas.Brush.Color := $00252525
   else
@@ -782,13 +813,24 @@ begin
       StringGrid1.Canvas.Font.Color := clSilver;
     StringGrid1.Canvas.Font.Style := [fsBold];
   end
+  else if IsConnectedRow and (ACol = 1) then
+  begin
+    StringGrid1.Canvas.Font.Color := $0066FF66;
+    StringGrid1.Canvas.Font.Style := [fsBold];
+  end
   else
   begin
     StringGrid1.Canvas.Font.Color := clWhite;
     StringGrid1.Canvas.Font.Style := [];
   end;
 
-  StringGrid1.Canvas.TextRect(Rect, Rect.Left + 8, Rect.Top + 6, StringGrid1.Cells[ACol, ARow]);
+  // На IP-ячейке подключённого сервера добавляем маркер — саму ячейку
+  // (Cells[]) не трогаем, чтобы не сломать сортировку/сохранение/экспорт
+  CellText := StringGrid1.Cells[ACol, ARow];
+  if IsConnectedRow and (ACol = 1) then
+    CellText := Chr(9679) + ' ' + CellText; // ●
+
+  StringGrid1.Canvas.TextRect(Rect, Rect.Left + 8, Rect.Top + 6, CellText);
 end;
 
 procedure TForm1.UpdateStats;
@@ -1012,6 +1054,17 @@ procedure TForm1.SetVpnStatusText(const S: string);
 begin
   if StatusBar1.Panels.Count > 2 then
     StatusBar1.Panels[2].Text := S;
+end;
+
+// Запоминает IP сервера, к которому сейчас поднято SoftEther-подключение
+// (пустая строка — подключения нет), и просит таблицу перерисоваться, чтобы
+// строка с этим IP сразу подсветилась в StringGrid1DrawCell. Храним именно
+// IP, а не номер строки — номер после сортировки/обновления списка теряет
+// смысл, а IP остаётся верным ориентиром независимо от порядка строк.
+procedure TForm1.SetConnectedServerIP(const IP: string);
+begin
+  FConnectedServerIP := IP;
+  StringGrid1.Invalidate;
 end;
 
 // Находит vpncmd.exe (утилита управления SoftEther VPN Client): сначала
