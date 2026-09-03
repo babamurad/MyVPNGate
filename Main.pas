@@ -472,8 +472,13 @@ begin
     RunVpnCmd(FForm.FVpnCmdPath, 'AccountStatusGet ' + SoftEtherAccountName, Output);
     LowerOutput := LowerCase(Output);
 
-    // "disconnected" тоже содержит подстроку "connected" — проверяем его первым
-    if (Pos('disconnected', LowerOutput) = 0) and (Pos('connected', LowerOutput) > 0) then
+    // Реальный текст успешного статуса (проверено по живому выводу
+    // AccountStatusGet) — не "Connected", а:
+    //   Session Status |Connection Completed (Session Established)
+    // Проверка на голое "connected" тут в принципе не могла сработать —
+    // "Connection" и "Connected" разные слова, подстрока не совпадает.
+    if (Pos('connection completed', LowerOutput) > 0) or
+       (Pos('session established', LowerOutput) > 0) then
     begin
       Connected := True;
       Break;
