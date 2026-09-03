@@ -231,9 +231,36 @@ end;
 
 // Вызывает "vpncmd.exe localhost /CLIENT /CMD <Args>" — управление локально
 // установленным и уже запущенным SoftEther VPN Client.
+//
+// В Output возвращается ТОЛЬКО результат самой команды: vpncmd перед этим
+// всегда печатает служебную шапку с версией и строкой
+// 'Connected to VPN Client "localhost".' — она означает лишь то, что САМА
+// утилита vpncmd подключилась к локальной службе, и никак не связана с
+// состоянием VPN-сессии. Если её не отрезать, любой текстовый поиск слова
+// "connected" (например, в AccountStatusGet) ложно сработает на эту шапку
+// при любом вызове, вне зависимости от реального результата.
 function RunVpnCmd(const VpnCmdExe, Args: string; out Output: string): Boolean;
+var
+  RawOutput: string;
+  PromptPos: Integer;
+const
+  PromptMarker = 'VPN Client>';
 begin
-  Result := RunProcessCapture('"' + VpnCmdExe + '" localhost /CLIENT /CMD ' + Args, 15000, Output);
+  Result := RunProcessCapture('"' + VpnCmdExe + '" localhost /CLIENT /CMD ' + Args, 15000, RawOutput);
+
+  // "VPN Client>" — это приглашение, за которым vpncmd эхом печатает саму
+  // команду, а после перевода строки уже идёт её реальный результат.
+  // Отрезаем всё до конца этой строки, оставляя только результат.
+  PromptPos := Pos(PromptMarker, RawOutput);
+  if PromptPos > 0 then
+  begin
+    Output := Copy(RawOutput, PromptPos + Length(PromptMarker), MaxInt);
+    PromptPos := Pos(#10, Output); // пропускаем остаток строки-эха самой команды
+    if PromptPos > 0 then
+      Output := Copy(Output, PromptPos + 1, MaxInt);
+  end
+  else
+    Output := RawOutput;
 end;
 
 { TSoftEtherThread }
