@@ -462,7 +462,11 @@ begin
 
   Connected := False;
   Failed := False;
-  for Attempt := 1 to 20 do // ждём подключения до ~20 секунд
+  // Ждём подключения до ~60 секунд: на практике SoftEther иногда успевает
+  // подключиться уже ПОСЛЕ того, как здесь заканчивалось время ожидания
+  // (20с оказалось мало — Client Manager показывал Connected, а мы уже
+  // сообщали таймаут)
+  for Attempt := 1 to 60 do
   begin
     Sleep(1000);
     RunVpnCmd(FForm.FVpnCmdPath, 'AccountStatusGet ' + SoftEtherAccountName, Output);
