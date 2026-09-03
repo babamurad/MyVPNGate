@@ -264,6 +264,67 @@ begin
     Output := RawOutput;
 end;
 
+// Собирает файл настроек VPN-подключения SoftEther Client в его собственном
+// текстовом формате (том же, что даёт "AccountExport") и импортирует его
+// через AccountImport — так надёжнее, чем собирать аккаунт командами
+// AccountSet/AccountCreate/AccountDetailSet: у них просто нет параметра для
+// NoUdpAcceleration (в интерфейсе — галка "Disable NAT-T"), а без него, как
+// выяснилось на практике, подключение к публичным узлам VPN Gate не
+// проходит. Значения ниже (кроме Hostname/Port) списаны с реально рабочего,
+// вручную настроенного подключения.
+function BuildSoftEtherAccountFile(const IP: string; APort: Integer): string;
+begin
+  Result :=
+    '# VPN Client VPN Connection Setting File' + sLineBreak +
+    '# Сгенерировано MyVPNGate' + sLineBreak +
+    sLineBreak +
+    'declare root' + sLineBreak +
+    '{' + sLineBreak +
+    '        bool CheckServerCert false' + sLineBreak +
+    '        uint64 CreateDateTime 0' + sLineBreak +
+    '        uint64 LastConnectDateTime 0' + sLineBreak +
+    '        bool StartupAccount false' + sLineBreak +
+    '        uint64 UpdateDateTime 0' + sLineBreak +
+    sLineBreak +
+    '        declare ClientAuth' + sLineBreak +
+    '        {' + sLineBreak +
+    '                uint AuthType 1' + sLineBreak +
+    '                byte HashedPassword H8N7rT8BH44q0nFXC9NlFxetGzQ=' + sLineBreak +
+    '                string Username ' + SoftEtherUser + sLineBreak +
+    '        }' + sLineBreak +
+    '        declare ClientOption' + sLineBreak +
+    '        {' + sLineBreak +
+    '                string AccountName ' + SoftEtherAccountName + sLineBreak +
+    '                uint AdditionalConnectionInterval 1' + sLineBreak +
+    '                uint ConnectionDisconnectSpan 0' + sLineBreak +
+    '                string DeviceName ' + SoftEtherNicName + sLineBreak +
+    '                bool DisableQoS false' + sLineBreak +
+    '                bool HalfConnection false' + sLineBreak +
+    '                bool HideNicInfoWindow false' + sLineBreak +
+    '                bool HideStatusWindow false' + sLineBreak +
+    '                string Hostname ' + IP + '/tcp' + sLineBreak +
+    '                string HubName ' + SoftEtherHubName + sLineBreak +
+    '                uint MaxConnection 1' + sLineBreak +
+    '                bool NoRoutingTracking false' + sLineBreak +
+    '                bool NoTls1 false' + sLineBreak +
+    '                bool NoUdpAcceleration false' + sLineBreak +
+    '                uint NumRetry 4294967295' + sLineBreak +
+    '                uint Port ' + IntToStr(APort) + sLineBreak +
+    '                uint PortUDP 0' + sLineBreak +
+    '                string ProxyName $' + sLineBreak +
+    '                byte ProxyPassword $' + sLineBreak +
+    '                uint ProxyPort 0' + sLineBreak +
+    '                uint ProxyType 0' + sLineBreak +
+    '                string ProxyUsername $' + sLineBreak +
+    '                bool RequireBridgeRoutingMode false' + sLineBreak +
+    '                bool RequireMonitorMode false' + sLineBreak +
+    '                uint RetryInterval 15' + sLineBreak +
+    '                bool UseCompress false' + sLineBreak +
+    '                bool UseEncrypt true' + sLineBreak +
+    '        }' + sLineBreak +
+    '}' + sLineBreak;
+end;
+
 // Настройка VPN-подключения через vpncmd (даже к уже существующему аккаунту)
 // требует повышенных прав — без них AccountCreate/AccountSet у SoftEther
 // Client Service молча ничего не сохраняют. Проверяем реальную elevation
@@ -326,7 +387,7 @@ end;
 
 procedure TSoftEtherThread.Execute;
 var
-  Output, LowerOutput: string;
+  Output, LowerOutput, ConfigPath: string;
   Attempt: Integer;
   Connected, Failed: Boolean;
 begin
@@ -354,20 +415,28 @@ begin
   // На случай, если уже была активна предыдущая попытка/сессия
   RunVpnCmd(FForm.FVpnCmdPath, 'AccountDisconnect ' + SoftEtherAccountName, Output);
 
-  // Пробуем обновить уже существующий аккаунт под новый сервер; если его ещё
-  // нет — создаём. AccountSet возвращает ошибку, если аккаунта не существует.
-  if not RunVpnCmd(FForm.FVpnCmdPath, Format(
-       'AccountSet %s /SERVER:%s:%d /HUB:%s /USERNAME:%s /NICNAME:%s',
-       [SoftEtherAccountName, FServerIP, FServerPort, SoftEtherHubName, SoftEtherUser, SoftEtherNicName]),
-       Output)
-     or (Pos('error', LowerCase(Output)) > 0) then
-  begin
-    RunVpnCmd(FForm.FVpnCmdPath, Format(
-      'AccountCreate %s /SERVER:%s:%d /HUB:%s /USERNAME:%s /NICNAME:%s',
-      [SoftEtherAccountName, FServerIP, FServerPort, SoftEtherHubName, SoftEtherUser, SoftEtherNicName]),
-      Output);
+  // Всегда пересоздаём аккаунт заново через импорт файла настроек (а не
+  // AccountSet/AccountCreate) — так гарантированно выставляются ВСЕ нужные
+  // параметры, включая NoUdpAcceleration (см. BuildSoftEtherAccountFile).
+  // Сначала удаляем прежнюю версию — если её не было, ошибка безвредна.
+  RunVpnCmd(FForm.FVpnCmdPath, 'AccountDelete ' + SoftEtherAccountName, Output);
+
+  ConfigPath := ExtractFilePath(ParamStr(0)) + 'softether_account.vpn';
+  try
+    TFile.WriteAllText(ConfigPath, BuildSoftEtherAccountFile(FServerIP, FServerPort), TEncoding.ASCII);
+  except
+    on E: Exception do
+    begin
+      FStatusText := 'VPN: не удалось подготовить файл настроек (' + E.Message + ')';
+      Synchronize(SyncStatus);
+      Exit;
+    end;
   end;
 
+  RunVpnCmd(FForm.FVpnCmdPath, 'AccountImport "' + ConfigPath + '"', Output);
+
+  // Пароль в файле — не настоящий (плейсхолдер-хэш из шаблона), выставляем
+  // реальный отдельной командой, как и раньше
   RunVpnCmd(FForm.FVpnCmdPath, Format('AccountPasswordSet %s /PASSWORD:%s /TYPE:standard',
     [SoftEtherAccountName, SoftEtherPassword]), Output);
 
