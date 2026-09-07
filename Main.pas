@@ -115,6 +115,8 @@ type
     FSortAscending: Boolean;                   // Направление текущей сортировки
     FVpnCmdPath: string;                       // Путь к vpncmd.exe (SoftEther VPN Client), находится один раз
     FConnectedServerIP: string;                // IP сервера, к которому сейчас поднято SoftEther-подключение ('' — нет)
+    FFullServerList: TStringList;              // Полный список серверов, отложенный в сторону фильтром «Оставить только рабочие» (nil — фильтр не активен)
+    FShowingWorkingOnly: Boolean;               // True, если сейчас показан отфильтрованный (только рабочие) список
     procedure SaveListToFile;
     procedure UpdateStats;
     procedure UpdateSortHeaders;
@@ -579,6 +581,8 @@ begin
   FSortColumn := -1;
   FSortAscending := True;
   FVpnCmdPath := ''; // находим лениво, при первом обращении к SoftEther
+  FFullServerList := nil;
+  FShowingWorkingOnly := False;
   FConnectedServerIP := '';
 
   // Заголовки колонок
@@ -657,6 +661,7 @@ end;
 procedure TForm1.FormDestroy(Sender: TObject);
 begin
   FOvpnConfigs.Free;
+  FFullServerList.Free;
 end;
 
 procedure TForm1.FormResize(Sender: TObject);
@@ -676,6 +681,12 @@ end;
 
 procedure TForm1.Button1Click(Sender: TObject);
 begin
+  // Свежая загрузка списка отменяет старый фильтр «Оставить только рабочие»
+  // (спрятанные им серверы всё равно заменятся новыми данными)
+  FreeAndNil(FFullServerList);
+  FShowingWorkingOnly := False;
+  Button3.Caption := 'Оставить только рабочие';
+
   // Прячем кнопку, чтобы исключить повторные нажатия
   Button1.Visible := False;
 
@@ -707,64 +718,95 @@ end;
 procedure TForm1.Button3Click(Sender: TObject);
 var
   i: Integer;
-  TempList: TStringList;
   Cols: TArray<string>;
-  RIdx: Integer;
-begin
-  TempList := TStringList.Create;
-  try
-    for i := 1 to StringGrid1.RowCount - 1 do
-    begin
-      if StringGrid1.Cells[7, i] = 'Работает!' then
-      begin
-        TempList.Add(StringGrid1.Cells[1, i] + ',' + // IP
-                     StringGrid1.Cells[2, i] + ',' + // Порт
-                     StringGrid1.Cells[3, i] + ',' + // Страна
-                     StringGrid1.Cells[4, i] + ',' + // Пинг
-                     StringGrid1.Cells[5, i] + ',' + // Скорость
-                     StringGrid1.Cells[6, i] + ',' + // Протокол
-                     StringGrid1.Cells[7, i]);       // Статус
-      end;
-    end;
+  FilteredList: TStringList;
 
-    if TempList.Count > 0 then
-      StringGrid1.RowCount := TempList.Count + 1
+  // Заполняет StringGrid1 строками из List (каждая строка — те же 7 полей,
+  // что использует SaveListToFile), либо очищает таблицу, если List пуст.
+  procedure FillGridFrom(List: TStringList);
+  var
+    j, R: Integer;
+    C: TArray<string>;
+  begin
+    if List.Count > 0 then
+      StringGrid1.RowCount := List.Count + 1
     else
     begin
       StringGrid1.RowCount := 2;
-      StringGrid1.Cells[0, 1] := '';
-      StringGrid1.Cells[1, 1] := '';
-      StringGrid1.Cells[2, 1] := '';
-      StringGrid1.Cells[3, 1] := '';
-      StringGrid1.Cells[4, 1] := '';
-      StringGrid1.Cells[5, 1] := '';
-      StringGrid1.Cells[6, 1] := '';
-      StringGrid1.Cells[7, 1] := '';
-      UpdateStats;
-      SaveListToFile;
+      for j := 0 to 7 do
+        StringGrid1.Cells[j, 1] := '';
       Exit;
     end;
 
-    for i := 0 to TempList.Count - 1 do
+    for j := 0 to List.Count - 1 do
     begin
-      RIdx := i + 1;
-      Cols := TempList[i].Split([',']);
-      if Length(Cols) >= 7 then
+      R := j + 1;
+      C := List[j].Split([',']);
+      if Length(C) >= 7 then
       begin
-        StringGrid1.Cells[0, RIdx] := IntToStr(RIdx);
-        StringGrid1.Cells[1, RIdx] := Cols[0];
-        StringGrid1.Cells[2, RIdx] := Cols[1];
-        StringGrid1.Cells[3, RIdx] := Cols[2];
-        StringGrid1.Cells[4, RIdx] := Cols[3];
-        StringGrid1.Cells[5, RIdx] := Cols[4];
-        StringGrid1.Cells[6, RIdx] := Cols[5];
-        StringGrid1.Cells[7, RIdx] := Cols[6];
+        StringGrid1.Cells[0, R] := IntToStr(R);
+        StringGrid1.Cells[1, R] := C[0];
+        StringGrid1.Cells[2, R] := C[1];
+        StringGrid1.Cells[3, R] := C[2];
+        StringGrid1.Cells[4, R] := C[3];
+        StringGrid1.Cells[5, R] := C[4];
+        StringGrid1.Cells[6, R] := C[5];
+        StringGrid1.Cells[7, R] := C[6];
       end;
     end;
-  finally
-    TempList.Free;
   end;
-  SaveListToFile;
+
+begin
+  if FShowingWorkingOnly then
+  begin
+    // Повторное нажатие — просто возвращаем ранее отложенный полный список,
+    // ничего заново скачивать/проверять не нужно
+    if Assigned(FFullServerList) then
+    begin
+      FillGridFrom(FFullServerList);
+      FreeAndNil(FFullServerList);
+    end;
+    FShowingWorkingOnly := False;
+    Button3.Caption := 'Оставить только рабочие';
+    SaveListToFile;
+    UpdateStats;
+    Exit;
+  end;
+
+  // Первое нажатие — прячем неработающие серверы из таблицы, но не удаляем
+  // их совсем: сервер может быть просто временно недоступен и заработать
+  // позже, поэтому полный список сохраняем в памяти и на диске, чтобы его
+  // можно было вернуть повторным нажатием этой же кнопки.
+  FreeAndNil(FFullServerList);
+  FFullServerList := TStringList.Create;
+  for i := 1 to StringGrid1.RowCount - 1 do
+  begin
+    if Trim(StringGrid1.Cells[1, i]) <> '' then
+      FFullServerList.Add(StringGrid1.Cells[1, i] + ',' + // IP
+                           StringGrid1.Cells[2, i] + ',' + // Порт
+                           StringGrid1.Cells[3, i] + ',' + // Страна
+                           StringGrid1.Cells[4, i] + ',' + // Пинг
+                           StringGrid1.Cells[5, i] + ',' + // Скорость
+                           StringGrid1.Cells[6, i] + ',' + // Протокол
+                           StringGrid1.Cells[7, i]);       // Статус
+  end;
+  FFullServerList.SaveToFile(ExtractFilePath(ParamStr(0)) + 'servers.txt');
+
+  FilteredList := TStringList.Create;
+  try
+    for i := 0 to FFullServerList.Count - 1 do
+    begin
+      Cols := FFullServerList[i].Split([',']);
+      if (Length(Cols) >= 7) and (Cols[6] = 'Работает!') then
+        FilteredList.Add(FFullServerList[i]);
+    end;
+    FillGridFrom(FilteredList);
+  finally
+    FilteredList.Free;
+  end;
+
+  FShowingWorkingOnly := True;
+  Button3.Caption := 'Показать все серверы';
   UpdateStats;
 end;
 
@@ -786,8 +828,10 @@ begin
     '  1. Кнопка «Обновить» — загрузить свежий список серверов.' + sLineBreak +
     '  2. Кнопка «Проверить серверы» — проверить доступность всех серверов ' +
       'из списка (можно и по одному — через контекстное меню).' + sLineBreak +
-    '  3. Кнопка «Оставить только рабочие» — убрать из таблицы все серверы ' +
-      'со статусом, отличным от «Работает!».' + sLineBreak +
+    '  3. Кнопка «Оставить только рабочие» — временно скрыть из таблицы ' +
+      'серверы со статусом, отличным от «Работает!» (они не удаляются — ' +
+      'повторное нажатие той же кнопки, теперь «Показать все серверы», ' +
+      'возвращает их обратно).' + sLineBreak +
     '  4. Заголовки колонок IP / Порт / Страна / Пинг / Скорость кликабельны ' +
       '— сортируют таблицу, стрелка (▲/▼) показывает текущее направление.' + sLineBreak +
     '  5. Правая кнопка мыши на строке сервера — контекстное меню: ' +
