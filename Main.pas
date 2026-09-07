@@ -72,6 +72,7 @@ type
     Button1: TButton;
     Button2: TButton;
     Button3: TButton;
+    ButtonInfo: TButton;
     StringGrid1: TStringGrid;
     NetHTTPClient1: TNetHTTPClient;
     ProgressBar1: TProgressBar;
@@ -89,6 +90,7 @@ type
     procedure Button1Click(Sender: TObject);
     procedure Button2Click(Sender: TObject);
     procedure Button3Click(Sender: TObject);
+    procedure ButtonInfoClick(Sender: TObject);
     procedure FormCreate(Sender: TObject);
     procedure FormDestroy(Sender: TObject);
     procedure NetHTTPClient1ValidateServerCertificate(const Sender: TObject;
@@ -764,6 +766,45 @@ begin
   end;
   SaveListToFile;
   UpdateStats;
+end;
+
+procedure TForm1.ButtonInfoClick(Sender: TObject);
+begin
+  MessageDlg(
+    'MyVPNGate — браузер и чекер публичных VPN-серверов VPN Gate.' + sLineBreak + sLineBreak +
+
+    'Что делает программа:' + sLineBreak +
+    '  • загружает актуальный список публичных серверов VPN Gate;' + sLineBreak +
+    '  • проверяет их доступность (TCP-соединение) и показывает пинг, ' +
+      'скорость и реальный протокол (TCP/UDP) каждого сервера;' + sLineBreak +
+    '  • позволяет сохранить конфигурацию любого сервера в готовый файл .ovpn;' + sLineBreak +
+    '  • умеет подключаться и отключаться от выбранного сервера прямо из ' +
+      'программы через уже установленный SoftEther VPN Client, без ' +
+      'переключения на другую программу.' + sLineBreak + sLineBreak +
+
+    'Как пользоваться:' + sLineBreak +
+    '  1. Кнопка «Обновить» — загрузить свежий список серверов.' + sLineBreak +
+    '  2. Кнопка «Проверить серверы» — проверить доступность всех серверов ' +
+      'из списка (можно и по одному — через контекстное меню).' + sLineBreak +
+    '  3. Кнопка «Оставить только рабочие» — убрать из таблицы все серверы ' +
+      'со статусом, отличным от «Работает!».' + sLineBreak +
+    '  4. Заголовки колонок IP / Порт / Страна / Пинг / Скорость кликабельны ' +
+      '— сортируют таблицу, стрелка (▲/▼) показывает текущее направление.' + sLineBreak +
+    '  5. Правая кнопка мыши на строке сервера — контекстное меню: ' +
+      'скопировать IP или порт, перепроверить именно этот сервер, ' +
+      'сохранить его .ovpn, подключиться или отключиться через SoftEther.' + sLineBreak +
+    '  6. Строка сервера, к которому сейчас поднято SoftEther-подключение, ' +
+      'подсвечивается зелёным и отмечается значком «●» рядом с IP.' + sLineBreak + sLineBreak +
+
+    'Статус «Работает!» означает только то, что TCP-порт сервера принял ' +
+    'соединение — это не гарантирует рабочий VPN-туннель. Если конкретный ' +
+    'сервер не подключается, попробуйте другой из списка, желательно с ' +
+    'меньшим пингом и большей скоростью.' + sLineBreak + sLineBreak +
+
+    'Подключение через SoftEther требует отдельно установленного SoftEther ' +
+    'VPN Client — сама программа VPN-туннель не реализует, только ' +
+    'автоматизирует подключение к уже работающему клиенту.',
+    mtInformation, [mbOK], 0);
 end;
 
 procedure TForm1.StringGrid1DblClick(Sender: TObject);
