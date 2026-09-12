@@ -172,6 +172,7 @@ const
   SoftEtherAccountName = 'MyVPNGateQuick'; // одно и то же имя переиспользуется под любой сервер
   SoftEtherNicName = 'VPN'; // имя виртуального адаптера по умолчанию у SoftEther VPN Client Manager
   VpnCmdPathCacheFile = 'vpncmd_path.txt';
+  ServersUpdatedFile = 'servers_updated.txt'; // хранит дату/время последнего успешного обновления списка серверов
 
 // Запускает внешний процесс, скрыто (без окна), и возвращает весь его
 // стандартный вывод (stdout+stderr) одной строкой. Используется для вызова
@@ -614,6 +615,21 @@ begin
   OpenDialog1.Filter := 'vpncmd.exe|vpncmd.exe|Все файлы (*.*)|*.*';
   OpenDialog1.Title := 'Укажите путь к vpncmd.exe (SoftEther VPN Client)';
 
+  // Дата/время последнего успешного обновления списка серверов — сохраняется
+  // отдельным файлом, потому что servers.txt на диске может быть старым
+  // (загружен в прошлый раз), и без этой отметки не видно, насколько
+  // актуален список
+  if StatusBar1.Panels.Count > 3 then
+  try
+    if FileExists(ExtractFilePath(ParamStr(0)) + ServersUpdatedFile) then
+      StatusBar1.Panels[3].Text := 'Обновлено: ' +
+        Trim(TFile.ReadAllText(ExtractFilePath(ParamStr(0)) + ServersUpdatedFile))
+    else
+      StatusBar1.Panels[3].Text := 'Обновлено: —';
+  except
+    StatusBar1.Panels[3].Text := 'Обновлено: —';
+  end;
+
   FilePath := ExtractFilePath(ParamStr(0)) + 'servers.txt';
   if not FileExists(FilePath) then Exit;
 
@@ -838,7 +854,9 @@ begin
       'скопировать IP или порт, перепроверить именно этот сервер, ' +
       'сохранить его .ovpn, подключиться или отключиться через SoftEther.' + sLineBreak +
     '  6. Строка сервера, к которому сейчас поднято SoftEther-подключение, ' +
-      'подсвечивается зелёным и отмечается значком «●» рядом с IP.' + sLineBreak + sLineBreak +
+      'подсвечивается зелёным и отмечается значком «●» рядом с IP.' + sLineBreak +
+    '  7. В правой части статус-бара внизу окна — дата и время последнего ' +
+      'обновления списка серверов кнопкой «Обновить».' + sLineBreak + sLineBreak +
 
     'Статус «Работает!» означает только то, что TCP-порт сервера принял ' +
     'соединение — это не гарантирует рабочий VPN-туннель. Если конкретный ' +
@@ -1464,6 +1482,7 @@ var
   i: Integer;
   Cols: TArray<string>;
   RowIdx: Integer;
+  UpdatedText: string;
 begin
   // Возвращаем кнопку на место и скрываем прогресс-бар
   FForm.ProgressBar1.Visible := False;
@@ -1509,6 +1528,17 @@ begin
 
   FForm.SaveListToFile;
   FForm.UpdateStats;
+
+  // Отмечаем момент успешного обновления — и на экране, и на диске, чтобы
+  // при следующем запуске программы было видно, насколько свежий список
+  UpdatedText := FormatDateTime('dd.mm.yyyy hh:nn', Now);
+  if FForm.StatusBar1.Panels.Count > 3 then
+    FForm.StatusBar1.Panels[3].Text := 'Обновлено: ' + UpdatedText;
+  try
+    TFile.WriteAllText(ExtractFilePath(ParamStr(0)) + ServersUpdatedFile, UpdatedText);
+  except
+    // Не критично, если не удалось сохранить — статус-бар всё равно покажет актуальную дату
+  end;
 end;
 
 end.

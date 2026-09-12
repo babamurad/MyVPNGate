@@ -121,6 +121,9 @@ object Form1: TForm1
       end
       item
         Width = 300
+      end
+      item
+        Width = 230
       end>
   end
   object NetHTTPClient1: TNetHTTPClient
