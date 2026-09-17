@@ -87,6 +87,10 @@ type
     MenuDisconnectSoftEther: TMenuItem;
     SaveDialog1: TSaveDialog;
     OpenDialog1: TOpenDialog;
+    TrayIcon1: TTrayIcon;
+    TrayPopupMenu: TPopupMenu;
+    MenuTrayShow: TMenuItem;
+    MenuTrayExit: TMenuItem;
     procedure Button1Click(Sender: TObject);
     procedure Button2Click(Sender: TObject);
     procedure Button3Click(Sender: TObject);
@@ -108,6 +112,9 @@ type
     procedure MenuSaveOvpnClick(Sender: TObject);
     procedure MenuConnectSoftEtherClick(Sender: TObject);
     procedure MenuDisconnectSoftEtherClick(Sender: TObject);
+    procedure TrayIcon1DblClick(Sender: TObject);
+    procedure MenuTrayShowClick(Sender: TObject);
+    procedure MenuTrayExitClick(Sender: TObject);
   private
     FOvpnConfigs: TDictionary<string, string>; // IP -> декодированный .ovpn (заполняется при обновлении списка)
     FContextRow: Integer;                      // Строка, по которой кликнули правой кнопкой (для контекстного меню)
@@ -125,6 +132,8 @@ type
     procedure SetVpnStatusText(const S: string);
     procedure SetConnectedServerIP(const IP: string);
     function EnsureElevatedForSoftEther: Boolean;
+    procedure ApplicationMinimize(Sender: TObject);
+    procedure RestoreFromTray;
   public
     { Public declarations }
   end;
@@ -577,6 +586,12 @@ begin
   StringGrid1.FixedRows := 1;
   StringGrid1.RowCount := 2;
 
+  // Сворачивание в трей: значок в трее появляется при сворачивании окна и
+  // прячется обратно при восстановлении (см. ApplicationMinimize/RestoreFromTray)
+  TrayIcon1.Icon := Application.Icon;
+  TrayIcon1.Hint := 'MyVPNGate';
+  Application.OnMinimize := ApplicationMinimize;
+
   FOvpnConfigs := TDictionary<string, string>.Create;
   FContextRow := -1;
   FSortColumn := -1;
@@ -680,6 +695,39 @@ begin
   FFullServerList.Free;
 end;
 
+// Application.OnMinimize срабатывает при сворачивании главного окна —
+// прячем его с панели задач и показываем значок в трее вместо него
+procedure TForm1.ApplicationMinimize(Sender: TObject);
+begin
+  Hide;
+  TrayIcon1.Visible := True;
+end;
+
+// Возвращает окно из трея обратно на экран (по двойному клику на значке
+// или пункту «Показать» его контекстного меню)
+procedure TForm1.RestoreFromTray;
+begin
+  TrayIcon1.Visible := False;
+  Show;
+  WindowState := wsNormal;
+  Application.BringToFront;
+end;
+
+procedure TForm1.TrayIcon1DblClick(Sender: TObject);
+begin
+  RestoreFromTray;
+end;
+
+procedure TForm1.MenuTrayShowClick(Sender: TObject);
+begin
+  RestoreFromTray;
+end;
+
+procedure TForm1.MenuTrayExitClick(Sender: TObject);
+begin
+  Close;
+end;
+
 procedure TForm1.FormResize(Sender: TObject);
 var
   TotalWidth: Integer;
@@ -697,11 +745,11 @@ end;
 
 procedure TForm1.Button1Click(Sender: TObject);
 begin
-  // Свежая загрузка списка отменяет старый фильтр «Оставить только рабочие»
-  // (спрятанные им серверы всё равно заменятся новыми данными)
-  FreeAndNil(FFullServerList);
-  FShowingWorkingOnly := False;
-  Button3.Caption := 'Оставить только рабочие';
+  // Сброс фильтра «Оставить только рабочие» откладываем до момента, когда
+  // список действительно успешно загрузится (см. TUpdateThread.UpdateUI) —
+  // если здесь сбросить его заранее, а загрузка не удастся (нет сети и т.п.),
+  // отложенный фильтром полный список будет потерян, а в таблице так и
+  // останутся только отфильтрованные строки, как будто остальные исчезли.
 
   // Прячем кнопку, чтобы исключить повторные нажатия
   Button1.Visible := False;
@@ -856,7 +904,10 @@ begin
     '  6. Строка сервера, к которому сейчас поднято SoftEther-подключение, ' +
       'подсвечивается зелёным и отмечается значком «●» рядом с IP.' + sLineBreak +
     '  7. В правой части статус-бара внизу окна — дата и время последнего ' +
-      'обновления списка серверов кнопкой «Обновить».' + sLineBreak + sLineBreak +
+      'обновления списка серверов кнопкой «Обновить».' + sLineBreak +
+    '  8. Кнопка сворачивания окна прячет программу в трей (значок рядом с ' +
+      'часами) вместо панели задач; вернуть окно — двойным кликом по ' +
+      'значку или пунктом «Показать» его меню по правому клику.' + sLineBreak + sLineBreak +
 
     'Статус «Работает!» означает только то, что TCP-порт сервера принял ' +
     'соединение — это не гарантирует рабочий VPN-туннель. Если конкретный ' +
@@ -1493,6 +1544,13 @@ begin
     ShowMessage('Ошибка скачивания: ' + FErrorMessage);
     Exit;
   end;
+
+  // Список действительно загрузился — теперь можно сбросить старый фильтр
+  // «Оставить только рабочие»: отложенный им список сейчас всё равно
+  // заменится свежими данными
+  FreeAndNil(FForm.FFullServerList);
+  FForm.FShowingWorkingOnly := False;
+  FForm.Button3.Caption := 'Оставить только рабочие';
 
   if FTempServers.Count > 0 then
     FForm.StringGrid1.RowCount := FTempServers.Count + 1
