@@ -1238,4 +1238,23 @@ object Form1: TForm1
     Left = 664
     Top = 200
   end
+  object TrayIcon1: TTrayIcon
+    PopupMenu = TrayPopupMenu
+    OnDblClick = TrayIcon1DblClick
+    Left = 760
+    Top = 408
+  end
+  object TrayPopupMenu: TPopupMenu
+    Left = 664
+    Top = 408
+    object MenuTrayShow: TMenuItem
+      Caption = #1055#1086#1082#1072#1079#1072#1090#1100
+      Default = True
+      OnClick = MenuTrayShowClick
+    end
+    object MenuTrayExit: TMenuItem
+      Caption = #1042#1099#1093#1086#1076
+      OnClick = MenuTrayExitClick
+    end
+  end
 end
