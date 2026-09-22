@@ -9,7 +9,7 @@ uses
   Clipbrd, System.NetEncoding,
   System.Net.URLClient, System.Net.HttpClient, System.Net.HttpClientComponent,
   Vcl.ComCtrls, System.ImageList, Vcl.ImgList, Vcl.Menus,
-  System.Generics.Collections, System.IOUtils, Winapi.ShellAPI;
+  System.Generics.Collections, System.IOUtils, Winapi.ShellAPI, System.IniFiles;
 
 type
   TForm1 = class; // Предварительное объявление
@@ -35,13 +35,14 @@ type
     FForm: TForm1;
     FErrorMessage: string;
     FSuccess: Boolean;
+    FIsAuto: Boolean; // True — запущено таймером автообновления, а не нажатием «Обновить»
     FTempServers: TStringList;
     FTempOvpn: TDictionary<string, string>;
     procedure UpdateUI;
   protected
     procedure Execute; override;
   public
-    constructor Create(AForm: TForm1);
+    constructor Create(AForm: TForm1; AIsAuto: Boolean = False);
     destructor Destroy; override;
   end;
 
@@ -91,6 +92,8 @@ type
     TrayPopupMenu: TPopupMenu;
     MenuTrayShow: TMenuItem;
     MenuTrayExit: TMenuItem;
+    ButtonSettings: TButton;
+    UpdateTimer: TTimer;
     procedure Button1Click(Sender: TObject);
     procedure Button2Click(Sender: TObject);
     procedure Button3Click(Sender: TObject);
@@ -115,6 +118,8 @@ type
     procedure TrayIcon1DblClick(Sender: TObject);
     procedure MenuTrayShowClick(Sender: TObject);
     procedure MenuTrayExitClick(Sender: TObject);
+    procedure ButtonSettingsClick(Sender: TObject);
+    procedure UpdateTimerTimer(Sender: TObject);
   private
     FOvpnConfigs: TDictionary<string, string>; // IP -> декодированный .ovpn (заполняется при обновлении списка)
     FContextRow: Integer;                      // Строка, по которой кликнули правой кнопкой (для контекстного меню)
@@ -124,6 +129,13 @@ type
     FConnectedServerIP: string;                // IP сервера, к которому сейчас поднято SoftEther-подключение ('' — нет)
     FFullServerList: TStringList;              // Полный список серверов, отложенный в сторону фильтром «Оставить только рабочие» (nil — фильтр не активен)
     FShowingWorkingOnly: Boolean;               // True, если сейчас показан отфильтрованный (только рабочие) список
+    FAutoUpdateEnabled: Boolean;                // Включено ли автообновление списка серверов по таймеру
+    FAutoUpdateMinutes: Integer;                // Интервал автообновления, в минутах
+    procedure StartServerListUpdate(AIsAuto: Boolean);
+    procedure LoadAutoUpdateSettings;
+    procedure SaveAutoUpdateSettings;
+    procedure ApplyAutoUpdateTimer;
+    procedure ShowAutoUpdateSettingsDialog;
     procedure SaveListToFile;
     procedure UpdateStats;
     procedure UpdateSortHeaders;
@@ -182,6 +194,10 @@ const
   SoftEtherNicName = 'VPN'; // имя виртуального адаптера по умолчанию у SoftEther VPN Client Manager
   VpnCmdPathCacheFile = 'vpncmd_path.txt';
   ServersUpdatedFile = 'servers_updated.txt'; // хранит дату/время последнего успешного обновления списка серверов
+  AutoUpdateSettingsFile = 'autoupdate.ini';  // хранит настройки автообновления (включено/выключено, интервал)
+  DefaultAutoUpdateMinutes = 30;
+  MinAutoUpdateMinutes = 5;
+  MaxAutoUpdateMinutes = 1440; // сутки
 
 // Запускает внешний процесс, скрыто (без окна), и возвращает весь его
 // стандартный вывод (stdout+stderr) одной строкой. Используется для вызова
@@ -592,6 +608,11 @@ begin
   TrayIcon1.Hint := 'MyVPNGate';
   Application.OnMinimize := ApplicationMinimize;
 
+  // Автообновление списка серверов по таймеру — настройки читаются с диска
+  // и сразу применяются к таймеру (кнопка «Настройки» меняет их на лету)
+  LoadAutoUpdateSettings;
+  ApplyAutoUpdateTimer;
+
   FOvpnConfigs := TDictionary<string, string>.Create;
   FContextRow := -1;
   FSortColumn := -1;
@@ -745,6 +766,13 @@ end;
 
 procedure TForm1.Button1Click(Sender: TObject);
 begin
+  StartServerListUpdate(False);
+end;
+
+// Общий запуск фоновой загрузки списка — как по нажатию «Обновить» вручную,
+// так и по таймеру автообновления (AIsAuto = True)
+procedure TForm1.StartServerListUpdate(AIsAuto: Boolean);
+begin
   // Сброс фильтра «Оставить только рабочие» откладываем до момента, когда
   // список действительно успешно загрузится (см. TUpdateThread.UpdateUI) —
   // если здесь сбросить его заранее, а загрузка не удастся (нет сети и т.п.),
@@ -762,7 +790,141 @@ begin
   ProgressBar1.Visible := True;
 
   // Запускаем фоновую загрузку
-  TUpdateThread.Create(Self);
+  TUpdateThread.Create(Self, AIsAuto);
+end;
+
+// Срабатывает по таймеру автообновления (интервал задаётся в «Настройках»)
+procedure TForm1.UpdateTimerTimer(Sender: TObject);
+begin
+  // Если обновление уже идёт (например, только что нажали «Обновить»
+  // вручную) — пропускаем это срабатывание, следующее будет через интервал
+  if not Button1.Visible then Exit;
+  StartServerListUpdate(True);
+end;
+
+// Читает настройки автообновления из autoupdate.ini рядом с исполняемым
+// файлом; если файла ещё нет (первый запуск) — используются значения по
+// умолчанию (автообновление выключено)
+procedure TForm1.LoadAutoUpdateSettings;
+var
+  Ini: TIniFile;
+begin
+  FAutoUpdateEnabled := False;
+  FAutoUpdateMinutes := DefaultAutoUpdateMinutes;
+  try
+    Ini := TIniFile.Create(ExtractFilePath(ParamStr(0)) + AutoUpdateSettingsFile);
+    try
+      FAutoUpdateEnabled := Ini.ReadBool('AutoUpdate', 'Enabled', False);
+      FAutoUpdateMinutes := Ini.ReadInteger('AutoUpdate', 'Minutes', DefaultAutoUpdateMinutes);
+    finally
+      Ini.Free;
+    end;
+  except
+    // Файла может не быть или он повреждён — остаёмся со значениями по умолчанию
+  end;
+
+  if FAutoUpdateMinutes < MinAutoUpdateMinutes then FAutoUpdateMinutes := MinAutoUpdateMinutes;
+  if FAutoUpdateMinutes > MaxAutoUpdateMinutes then FAutoUpdateMinutes := MaxAutoUpdateMinutes;
+end;
+
+procedure TForm1.SaveAutoUpdateSettings;
+var
+  Ini: TIniFile;
+begin
+  try
+    Ini := TIniFile.Create(ExtractFilePath(ParamStr(0)) + AutoUpdateSettingsFile);
+    try
+      Ini.WriteBool('AutoUpdate', 'Enabled', FAutoUpdateEnabled);
+      Ini.WriteInteger('AutoUpdate', 'Minutes', FAutoUpdateMinutes);
+    finally
+      Ini.Free;
+    end;
+  except
+    // Не критично, если не удалось сохранить настройки на диск
+  end;
+end;
+
+// Применяет FAutoUpdateEnabled/FAutoUpdateMinutes к самому таймеру
+procedure TForm1.ApplyAutoUpdateTimer;
+begin
+  UpdateTimer.Interval := FAutoUpdateMinutes * 60000;
+  UpdateTimer.Enabled := FAutoUpdateEnabled;
+end;
+
+// Небольшой модальный диалог настроек — собирается прямо в коде, без
+// отдельной формы, чтобы не плодить лишние файлы .pas/.dfm ради двух полей
+procedure TForm1.ShowAutoUpdateSettingsDialog;
+var
+  Dlg: TForm;
+  ChkEnabled: TCheckBox;
+  LblMinutes: TLabel;
+  EditMinutes: TEdit;
+  BtnOK, BtnCancel: TButton;
+  Minutes: Integer;
+begin
+  Dlg := TForm.Create(Self);
+  try
+    Dlg.Caption := 'Настройки автообновления';
+    Dlg.BorderStyle := bsDialog;
+    Dlg.Position := poOwnerFormCenter;
+    Dlg.Font := Self.Font;
+    Dlg.ClientWidth := 340;
+    Dlg.ClientHeight := 150;
+
+    ChkEnabled := TCheckBox.Create(Dlg);
+    ChkEnabled.Parent := Dlg;
+    ChkEnabled.SetBounds(16, 16, 300, 20);
+    ChkEnabled.Caption := 'Автоматически обновлять список серверов';
+    ChkEnabled.Checked := FAutoUpdateEnabled;
+
+    LblMinutes := TLabel.Create(Dlg);
+    LblMinutes.Parent := Dlg;
+    LblMinutes.SetBounds(16, 52, 300, 16);
+    LblMinutes.Caption := Format('Интервал, минут (от %d до %d):',
+      [MinAutoUpdateMinutes, MaxAutoUpdateMinutes]);
+
+    EditMinutes := TEdit.Create(Dlg);
+    EditMinutes.Parent := Dlg;
+    EditMinutes.SetBounds(16, 72, 80, 23);
+    EditMinutes.NumbersOnly := True;
+    EditMinutes.MaxLength := 5;
+    EditMinutes.Text := IntToStr(FAutoUpdateMinutes);
+
+    BtnOK := TButton.Create(Dlg);
+    BtnOK.Parent := Dlg;
+    BtnOK.Caption := 'ОК';
+    BtnOK.ModalResult := mrOk;
+    BtnOK.Default := True;
+    BtnOK.SetBounds(Dlg.ClientWidth - 176, Dlg.ClientHeight - 40, 80, 28);
+
+    BtnCancel := TButton.Create(Dlg);
+    BtnCancel.Parent := Dlg;
+    BtnCancel.Caption := 'Отмена';
+    BtnCancel.ModalResult := mrCancel;
+    BtnCancel.Cancel := True;
+    BtnCancel.SetBounds(Dlg.ClientWidth - 88, Dlg.ClientHeight - 40, 72, 28);
+
+    Dlg.ActiveControl := ChkEnabled;
+
+    if Dlg.ShowModal = mrOk then
+    begin
+      Minutes := StrToIntDef(Trim(EditMinutes.Text), FAutoUpdateMinutes);
+      if Minutes < MinAutoUpdateMinutes then Minutes := MinAutoUpdateMinutes;
+      if Minutes > MaxAutoUpdateMinutes then Minutes := MaxAutoUpdateMinutes;
+
+      FAutoUpdateEnabled := ChkEnabled.Checked;
+      FAutoUpdateMinutes := Minutes;
+      SaveAutoUpdateSettings;
+      ApplyAutoUpdateTimer;
+    end;
+  finally
+    Dlg.Free;
+  end;
+end;
+
+procedure TForm1.ButtonSettingsClick(Sender: TObject);
+begin
+  ShowAutoUpdateSettingsDialog;
 end;
 
 procedure TForm1.Button2Click(Sender: TObject);
@@ -907,7 +1069,10 @@ begin
       'обновления списка серверов кнопкой «Обновить».' + sLineBreak +
     '  8. Кнопка сворачивания окна прячет программу в трей (значок рядом с ' +
       'часами) вместо панели задач; вернуть окно — двойным кликом по ' +
-      'значку или пунктом «Показать» его меню по правому клику.' + sLineBreak + sLineBreak +
+      'значку или пунктом «Показать» его меню по правому клику.' + sLineBreak +
+    '  9. Кнопка «Настройки» включает автоматическое обновление списка ' +
+      'серверов по таймеру и позволяет задать интервал (в минутах).' +
+      sLineBreak + sLineBreak +
 
     'Статус «Работает!» означает только то, что TCP-порт сервера принял ' +
     'соединение — это не гарантирует рабочий VPN-туннель. Если конкретный ' +
@@ -1373,9 +1538,10 @@ end;
 
 { TUpdateThread }
 
-constructor TUpdateThread.Create(AForm: TForm1);
+constructor TUpdateThread.Create(AForm: TForm1; AIsAuto: Boolean);
 begin
   FForm := AForm;
+  FIsAuto := AIsAuto;
   FTempServers := TStringList.Create;
   FTempOvpn := TDictionary<string, string>.Create;
   FSuccess := False;
@@ -1541,7 +1707,11 @@ begin
 
   if not FSuccess then
   begin
-    ShowMessage('Ошибка скачивания: ' + FErrorMessage);
+    // При автообновлении по таймеру всплывающее окно не показываем — оно
+    // будет мешать, если программа в этот момент свёрнута в трей или просто
+    // работает в фоне; следующая попытка всё равно произойдёт по таймеру
+    if not FIsAuto then
+      ShowMessage('Ошибка скачивания: ' + FErrorMessage);
     Exit;
   end;
 

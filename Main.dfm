@@ -92,6 +92,22 @@ object Form1: TForm1
       TabOrder = 4
       OnClick = ButtonInfoClick
     end
+    object ButtonSettings: TButton
+      Left = 830
+      Top = 8
+      Width = 44
+      Height = 42
+      Cursor = crHandPoint
+      Hint = #1053#1072#1089#1090#1088#1086#1081#1082#1080' '#1072#1074#1090#1086#1086#1073#1085#1086#1074#1083#1077#1085#1080#1103' '#1089#1087#1080#1089#1082#1072' '#1089#1077#1088#1074#1077#1088#1086#1074
+      Anchors = [akTop, akRight]
+      ImageAlignment = iaCenter
+      ImageIndex = 4
+      Images = ImageList1
+      ParentShowHint = False
+      ShowHint = True
+      TabOrder = 5
+      OnClick = ButtonSettingsClick
+    end
   end
   object StringGrid1: TStringGrid
     Left = 0
@@ -1256,5 +1272,11 @@ object Form1: TForm1
       Caption = #1042#1099#1093#1086#1076
       OnClick = MenuTrayExitClick
     end
+  end
+  object UpdateTimer: TTimer
+    Enabled = False
+    OnTimer = UpdateTimerTimer
+    Left = 760
+    Top = 480
   end
 end
