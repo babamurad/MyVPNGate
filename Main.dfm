@@ -5,7 +5,7 @@ object Form1: TForm1
   ClientHeight = 610
   ClientWidth = 940
   Color = clBtnFace
-  Constraints.MinHeight = 500
+  Constraints.MinHeight = 540
   Constraints.MinWidth = 820
   Font.Charset = DEFAULT_CHARSET
   Font.Color = clWindowText
@@ -22,12 +22,12 @@ object Form1: TForm1
     Left = 0
     Top = 0
     Width = 940
-    Height = 89
+    Height = 127
     Align = alTop
     TabOrder = 0
     DesignSize = (
       940
-      89)
+      127)
     object Button1: TButton
       Left = 16
       Top = 8
@@ -108,12 +108,37 @@ object Form1: TForm1
       TabOrder = 5
       OnClick = ButtonSettingsClick
     end
+    object LblCountry: TLabel
+      Left = 16
+      Top = 92
+      Width = 41
+      Height = 15
+      Caption = #1057#1090#1088#1072#1085#1072':'
+    end
+    object ComboCountry: TComboBox
+      Left = 70
+      Top = 88
+      Width = 180
+      Height = 23
+      Style = csDropDownList
+      TabOrder = 6
+      OnChange = ComboCountryChange
+    end
+    object ChkFavoritesOnly: TCheckBox
+      Left = 270
+      Top = 90
+      Width = 180
+      Height = 17
+      Caption = #1058#1086#1083#1100#1082#1086' '#1080#1079#1073#1088#1072#1085#1085#1086#1077
+      TabOrder = 7
+      OnClick = ChkFavoritesOnlyClick
+    end
   end
   object StringGrid1: TStringGrid
     Left = 0
-    Top = 89
+    Top = 127
     Width = 940
-    Height = 502
+    Height = 464
     Align = alClient
     ColCount = 4
     RowCount = 2
@@ -1236,6 +1261,10 @@ object Form1: TForm1
     object MenuSaveOvpn: TMenuItem
       Caption = #1057#1086#1093#1088#1072#1085#1080#1090#1100' .ovpn '#1092#1072#1081#1083'...'
       OnClick = MenuSaveOvpnClick
+    end
+    object MenuToggleFavorite: TMenuItem
+      Caption = #1044#1086#1073#1072#1074#1080#1090#1100' '#1074' '#1080#1079#1073#1088#1072#1085#1085#1086#1077
+      OnClick = MenuToggleFavoriteClick
     end
     object MenuConnectSoftEther: TMenuItem
       Caption = #1055#1086#1076#1082#1083#1102#1095#1080#1090#1100#1089#1103' '#1095#1077#1088#1077#1079' SoftEther'
