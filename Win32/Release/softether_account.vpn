@@ -25,7 +25,7 @@ declare root
                 bool HalfConnection false
                 bool HideNicInfoWindow false
                 bool HideStatusWindow false
-                string Hostname 147.47.142.115/tcp
+                string Hostname 147.47.146.55/tcp
                 string HubName VPNGATE
                 uint MaxConnection 1
                 bool NoRoutingTracking false
