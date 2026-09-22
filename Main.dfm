@@ -1292,6 +1292,10 @@ object Form1: TForm1
   object TrayPopupMenu: TPopupMenu
     Left = 664
     Top = 408
+    object MenuTrayQuickConnect: TMenuItem
+      Caption = #1041#1099#1089#1090#1088#1086#1077' '#1087#1086#1076#1082#1083#1102#1095#1077#1085#1080#1077
+      OnClick = MenuTrayQuickConnectClick
+    end
     object MenuTrayShow: TMenuItem
       Caption = #1055#1086#1082#1072#1079#1072#1090#1100
       Default = True
@@ -1306,6 +1310,13 @@ object Form1: TForm1
     Enabled = False
     OnTimer = UpdateTimerTimer
     Left = 760
+    Top = 480
+  end
+  object PingTimer: TTimer
+    Enabled = False
+    Interval = 10000
+    OnTimer = PingTimerTimer
+    Left = 664
     Top = 480
   end
 end

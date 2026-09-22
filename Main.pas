@@ -69,6 +69,26 @@ type
     constructor Create(AForm: TForm1; AAction: TSoftEtherAction; const AServerIP: string; AServerPort: Integer);
   end;
 
+  // Фоновая проверка активного SoftEther-подключения: спрашивает у vpncmd,
+  // жива ли сессия (то же самое, что уже используется при установлении
+  // соединения), и параллельно пингует сам сервер — только для отображения.
+  // FGeneration — "поколение" подключения (см. TForm1.FConnectionGeneration):
+  // если пользователь успел отключиться/переподключиться, пока эта проверка
+  // выполнялась, её результат уже устарел и должен быть просто отброшен.
+  TConnectionMonitorThread = class(TThread)
+  private
+    FForm: TForm1;
+    FTargetIP: string;
+    FGeneration: Integer;
+    FSessionAlive: Boolean;
+    FPingText: string;
+    procedure SyncResult;
+  protected
+    procedure Execute; override;
+  public
+    constructor Create(AForm: TForm1; const ATargetIP: string; AGeneration: Integer);
+  end;
+
   TForm1 = class(TForm)
     Panel1: TPanel;
     Button1: TButton;
@@ -99,6 +119,8 @@ type
     ComboCountry: TComboBox;
     ChkFavoritesOnly: TCheckBox;
     MenuToggleFavorite: TMenuItem;
+    PingTimer: TTimer;
+    MenuTrayQuickConnect: TMenuItem;
     procedure Button1Click(Sender: TObject);
     procedure Button2Click(Sender: TObject);
     procedure Button3Click(Sender: TObject);
@@ -128,6 +150,8 @@ type
     procedure ComboCountryChange(Sender: TObject);
     procedure ChkFavoritesOnlyClick(Sender: TObject);
     procedure MenuToggleFavoriteClick(Sender: TObject);
+    procedure PingTimerTimer(Sender: TObject);
+    procedure MenuTrayQuickConnectClick(Sender: TObject);
   private
     FOvpnConfigs: TDictionary<string, string>; // IP -> декодированный .ovpn (заполняется при обновлении списка)
     FContextRow: Integer;                      // Строка, по которой кликнули правой кнопкой (для контекстного меню)
@@ -142,6 +166,10 @@ type
     FFavorites: TStringList;                    // Множество IP избранных серверов (Sorted, без дублей)
     FAutoUpdateEnabled: Boolean;                // Включено ли автообновление списка серверов по таймеру
     FAutoUpdateMinutes: Integer;                // Интервал автообновления, в минутах
+    FAutoReconnectEnabled: Boolean;             // Переподключаться ли автоматически к другому серверу при обрыве связи
+    FConnectionGeneration: Integer;             // Увеличивается при каждом (пере)подключении/отключении — отсекает устаревшие результаты фоновых проверок
+    FConsecutiveDrops: Integer;                 // Сколько подряд проверок связи подряд не прошли
+    FReconnecting: Boolean;                     // True между обнаружением обрыва и стартом нового TSoftEtherThread — не даёт запустить переподключение дважды подряд
     procedure StartServerListUpdate(AIsAuto: Boolean);
     procedure LoadAutoUpdateSettings;
     procedure SaveAutoUpdateSettings;
@@ -165,6 +193,10 @@ type
     procedure SaveFavorites;
     function IsFavorite(const IP: string): Boolean;
     procedure ToggleFavorite(const IP: string);
+    function FindBestServerRow(out IP: string; out Port: Integer; const ExcludeIP: string = ''): Boolean;
+    procedure ConnectToServer(const IP: string; APort: Integer);
+    procedure ReconnectToNextBestServer(const ExcludeIP: string);
+    procedure HandleMonitorResult(SessionAlive: Boolean; const PingText: string);
   public
     { Public declarations }
   end;
@@ -203,6 +235,42 @@ begin
   end;
 end;
 
+// Достаёт число миллисекунд из вывода ping.exe — только для отображения
+// (само определение "жив/не жив" опирается на код завершения ping.exe, а не
+// на разбор текста). Понимает и английскую ("time=23ms"/"time<1ms"), и
+// русскую ("время=23мс"/"время<1мс") локаль Windows; если формат не узнан —
+// просто возвращает '-', не мешая остальной логике.
+function ExtractPingMs(const Output: string): string;
+var
+  Lower: string;
+  Pos1, Skip, Start, Len: Integer;
+begin
+  Result := '-';
+  Lower := LowerCase(Output);
+
+  Pos1 := Pos('time=', Lower);
+  Skip := Length('time=');
+  if Pos1 = 0 then
+  begin
+    Pos1 := Pos('время=', Lower);
+    Skip := Length('время=');
+  end;
+
+  if Pos1 > 0 then
+  begin
+    Start := Pos1 + Skip;
+    Len := 0;
+    while (Start + Len <= Length(Lower)) and CharInSet(Lower[Start + Len], ['0'..'9']) do
+      Inc(Len);
+    if Len > 0 then
+      Result := Copy(Output, Start, Len);
+    Exit;
+  end;
+
+  if (Pos('time<', Lower) > 0) or (Pos('время<', Lower) > 0) then
+    Result := '<1';
+end;
+
 const
   // Настройки автоматического подключения через SoftEther (публичные узлы
   // VPN Gate работают через фиксированный хаб и служебную пару логин/пароль)
@@ -226,7 +294,7 @@ const
 // стандартный вывод (stdout+stderr) одной строкой. Используется для вызова
 // vpncmd.exe — своего готового аналога в VCL (наподобие TProcess) нет,
 // поэтому напрямую через WinAPI (CreateProcess + анонимный pipe).
-function RunProcessCapture(const CommandLine: string; TimeoutMs: Cardinal; out Output: string): Boolean;
+function RunProcessCapture(const CommandLine: string; TimeoutMs: Cardinal; out Output: string; out ExitCode: DWORD): Boolean;
 var
   SecurityAttr: TSecurityAttributes;
   StdOutRead, StdOutWrite: THandle;
@@ -239,6 +307,7 @@ var
 begin
   Result := False;
   Output := '';
+  ExitCode := DWORD(-1);
   StdOutWrite := 0;
 
   FillChar(SecurityAttr, SizeOf(SecurityAttr), 0);
@@ -277,6 +346,7 @@ begin
     WaitResult := WaitForSingleObject(ProcessInfo.hProcess, TimeoutMs);
     if WaitResult <> WAIT_OBJECT_0 then
       TerminateProcess(ProcessInfo.hProcess, 1);
+    GetExitCodeProcess(ProcessInfo.hProcess, ExitCode);
     Result := True;
 
     CloseHandle(ProcessInfo.hProcess);
@@ -301,10 +371,11 @@ function RunVpnCmd(const VpnCmdExe, Args: string; out Output: string): Boolean;
 var
   RawOutput: string;
   PromptPos: Integer;
+  DummyExitCode: DWORD; // код завершения самого vpncmd.exe тут не нужен — важен только текст ответа
 const
   PromptMarker = 'VPN Client>';
 begin
-  Result := RunProcessCapture('"' + VpnCmdExe + '" localhost /CLIENT /CMD ' + Args, 15000, RawOutput);
+  Result := RunProcessCapture('"' + VpnCmdExe + '" localhost /CLIENT /CMD ' + Args, 15000, RawOutput, DummyExitCode);
 
   // "VPN Client>" — это приглашение, за которым vpncmd эхом печатает саму
   // команду, а после перевода строки уже идёт её реальный результат.
@@ -597,6 +668,53 @@ begin
   Synchronize(SyncStatus);
 end;
 
+{ TConnectionMonitorThread }
+
+constructor TConnectionMonitorThread.Create(AForm: TForm1; const ATargetIP: string; AGeneration: Integer);
+begin
+  inherited Create(False);
+  FreeOnTerminate := True;
+  FForm := AForm;
+  FTargetIP := ATargetIP;
+  FGeneration := AGeneration;
+end;
+
+procedure TConnectionMonitorThread.SyncResult;
+begin
+  // Пока проверка шла в фоне, могли успеть отключиться/переподключиться —
+  // тогда это уже не то соединение, к которому относится результат
+  if FGeneration <> FForm.FConnectionGeneration then Exit;
+  FForm.HandleMonitorResult(FSessionAlive, FPingText);
+end;
+
+procedure TConnectionMonitorThread.Execute;
+var
+  Output, LowerOutput, PingOutput: string;
+  ExitCode: DWORD;
+begin
+  // Жива ли сама SoftEther-сессия — тот же признак, что и при установлении
+  // соединения (см. TSoftEtherThread.Execute): "Connection Completed" /
+  // "Session Established", а не буквальное "Connected"
+  FSessionAlive := False;
+  if FForm.FVpnCmdPath <> '' then
+  begin
+    RunVpnCmd(FForm.FVpnCmdPath, 'AccountStatusGet ' + SoftEtherAccountName, Output);
+    LowerOutput := LowerCase(Output);
+    FSessionAlive := (Pos('connection completed', LowerOutput) > 0) or
+                      (Pos('session established', LowerOutput) > 0);
+  end;
+
+  // Пинг сервера — только для отображения (см. ExtractPingMs); статус сессии
+  // выше остаётся единственным, что решает, жива связь или нет
+  RunProcessCapture('ping -n 1 -w 1500 ' + FTargetIP, 3000, PingOutput, ExitCode);
+  if ExitCode = 0 then
+    FPingText := ExtractPingMs(PingOutput)
+  else
+    FPingText := '-';
+
+  Synchronize(SyncResult);
+end;
+
 { TTCPCheckThread }
 
 constructor TTCPCheckThread.Create(AForm: TForm1; ARowIndex: Integer; AIP: string; APort: Integer);
@@ -695,6 +813,8 @@ begin
   FFilterCountry := '';
   FFavoritesOnly := False;
   FConnectedServerIP := '';
+  FConnectionGeneration := 0;
+  FConsecutiveDrops := 0;
 
   LoadFavorites;
 
@@ -881,11 +1001,13 @@ var
 begin
   FAutoUpdateEnabled := False;
   FAutoUpdateMinutes := DefaultAutoUpdateMinutes;
+  FAutoReconnectEnabled := False;
   try
     Ini := TIniFile.Create(ExtractFilePath(ParamStr(0)) + AutoUpdateSettingsFile);
     try
       FAutoUpdateEnabled := Ini.ReadBool('AutoUpdate', 'Enabled', False);
       FAutoUpdateMinutes := Ini.ReadInteger('AutoUpdate', 'Minutes', DefaultAutoUpdateMinutes);
+      FAutoReconnectEnabled := Ini.ReadBool('Connection', 'AutoReconnect', False);
     finally
       Ini.Free;
     end;
@@ -906,6 +1028,7 @@ begin
     try
       Ini.WriteBool('AutoUpdate', 'Enabled', FAutoUpdateEnabled);
       Ini.WriteInteger('AutoUpdate', 'Minutes', FAutoUpdateMinutes);
+      Ini.WriteBool('Connection', 'AutoReconnect', FAutoReconnectEnabled);
     finally
       Ini.Free;
     end;
@@ -926,7 +1049,7 @@ end;
 procedure TForm1.ShowAutoUpdateSettingsDialog;
 var
   Dlg: TForm;
-  ChkEnabled, ChkAutoStart: TCheckBox;
+  ChkEnabled, ChkAutoStart, ChkAutoReconnect: TCheckBox;
   LblMinutes: TLabel;
   EditMinutes: TEdit;
   BtnOK, BtnCancel: TButton;
@@ -938,18 +1061,18 @@ begin
     Dlg.BorderStyle := bsDialog;
     Dlg.Position := poOwnerFormCenter;
     Dlg.Font := Self.Font;
-    Dlg.ClientWidth := 340;
-    Dlg.ClientHeight := 186;
+    Dlg.ClientWidth := 360;
+    Dlg.ClientHeight := 222;
 
     ChkEnabled := TCheckBox.Create(Dlg);
     ChkEnabled.Parent := Dlg;
-    ChkEnabled.SetBounds(16, 16, 300, 20);
+    ChkEnabled.SetBounds(16, 16, 320, 20);
     ChkEnabled.Caption := 'Автоматически обновлять список серверов';
     ChkEnabled.Checked := FAutoUpdateEnabled;
 
     LblMinutes := TLabel.Create(Dlg);
     LblMinutes.Parent := Dlg;
-    LblMinutes.SetBounds(16, 52, 300, 16);
+    LblMinutes.SetBounds(16, 52, 320, 16);
     LblMinutes.Caption := Format('Интервал, минут (от %d до %d):',
       [MinAutoUpdateMinutes, MaxAutoUpdateMinutes]);
 
@@ -962,9 +1085,15 @@ begin
 
     ChkAutoStart := TCheckBox.Create(Dlg);
     ChkAutoStart.Parent := Dlg;
-    ChkAutoStart.SetBounds(16, 108, 300, 20);
+    ChkAutoStart.SetBounds(16, 108, 320, 20);
     ChkAutoStart.Caption := 'Запускать вместе с Windows (свёрнуто в трей)';
     ChkAutoStart.Checked := IsAutoStartEnabled;
+
+    ChkAutoReconnect := TCheckBox.Create(Dlg);
+    ChkAutoReconnect.Parent := Dlg;
+    ChkAutoReconnect.SetBounds(16, 144, 320, 20);
+    ChkAutoReconnect.Caption := 'Переподключаться к другому серверу при обрыве связи';
+    ChkAutoReconnect.Checked := FAutoReconnectEnabled;
 
     BtnOK := TButton.Create(Dlg);
     BtnOK.Parent := Dlg;
@@ -990,6 +1119,7 @@ begin
 
       FAutoUpdateEnabled := ChkEnabled.Checked;
       FAutoUpdateMinutes := Minutes;
+      FAutoReconnectEnabled := ChkAutoReconnect.Checked;
       SaveAutoUpdateSettings;
       ApplyAutoUpdateTimer;
 
@@ -1278,7 +1408,14 @@ begin
       'фильтруют её по стране и/или показывают только отмеченные серверы.' + sLineBreak +
     '  11. Пункт контекстного меню «Добавить/Убрать из избранного» отмечает ' +
       'сервер значком «★» — такая отметка не пропадает при обновлении ' +
-      'списка и сортировке (сверяется по IP).' + sLineBreak + sLineBreak +
+      'списка и сортировке (сверяется по IP).' + sLineBreak +
+    '  12. Пункт «Быстрое подключение» в меню значка в трее сам выбирает ' +
+      'сервер с лучшей заявленной скоростью среди проверенных рабочих и ' +
+      'подключается к нему — без захода в окно программы.' + sLineBreak +
+    '  13. Пока подключение активно, статус-бар (и подсказка значка в трее) ' +
+      'каждые 10 секунд показывает пинг до сервера и следит, жива ли сама ' +
+      'VPN-сессия; в «Настройках» можно включить автоматическое ' +
+      'переподключение к другому серверу при обрыве связи.' + sLineBreak + sLineBreak +
 
     'Статус «Работает!» означает только то, что TCP-порт сервера принял ' +
     'соединение — это не гарантирует рабочий VPN-туннель. Если конкретный ' +
@@ -1610,6 +1747,13 @@ procedure TForm1.SetVpnStatusText(const S: string);
 begin
   if StatusBar1.Panels.Count > 2 then
     StatusBar1.Panels[2].Text := S;
+
+  // Дублируем в подсказку значка трея — это единственное, что видно, пока
+  // окно свёрнуто
+  if S = '' then
+    TrayIcon1.Hint := 'MyVPNGate'
+  else
+    TrayIcon1.Hint := 'MyVPNGate' + sLineBreak + S;
 end;
 
 // Запоминает IP сервера, к которому сейчас поднято SoftEther-подключение
@@ -1620,6 +1764,15 @@ end;
 procedure TForm1.SetConnectedServerIP(const IP: string);
 begin
   FConnectedServerIP := IP;
+
+  // Новое "поколение" отменяет результаты любых проверок связи, запущенных
+  // для предыдущего состояния (см. TConnectionMonitorThread), и запускает
+  // (или останавливает) сам мониторинг
+  Inc(FConnectionGeneration);
+  FConsecutiveDrops := 0;
+  FReconnecting := False;
+  PingTimer.Enabled := (IP <> '');
+
   StringGrid1.Invalidate;
 end;
 
@@ -1702,6 +1855,20 @@ begin
   IP := Trim(StringGrid1.Cells[1, FContextRow]);
   if IP = '' then Exit;
 
+  // Порт из таблицы (тот же, что и для OpenVPN) — на практике публичные узлы
+  // VPN Gate слушают нативный протокол SoftEther на том же порту, что и
+  // OpenVPN (одно и то же соединение определяет протокол по первым байтам).
+  // Фиксированный 443 подходит не всегда — подтверждено на практике: с ним
+  // подключение к части серверов не проходит, а с их собственным портом — да.
+  Port := StrToIntDef(StringGrid1.Cells[2, FContextRow], 443);
+  ConnectToServer(IP, Port);
+end;
+
+// Общая точка входа для подключения через SoftEther — используется и
+// контекстным меню, и «Быстрым подключением» из трея, и автопереподключением
+procedure TForm1.ConnectToServer(const IP: string; APort: Integer);
+begin
+  if IP = '' then Exit;
   if not EnsureElevatedForSoftEther then Exit;
 
   if FVpnCmdPath = '' then
@@ -1712,13 +1879,122 @@ begin
     Exit;
   end;
 
-  // Порт из таблицы (тот же, что и для OpenVPN) — на практике публичные узлы
-  // VPN Gate слушают нативный протокол SoftEther на том же порту, что и
-  // OpenVPN (одно и то же соединение определяет протокол по первым байтам).
-  // Фиксированный 443 подходит не всегда — подтверждено на практике: с ним
-  // подключение к части серверов не проходит, а с их собственным портом — да.
-  Port := StrToIntDef(StringGrid1.Cells[2, FContextRow], 443);
-  TSoftEtherThread.Create(Self, seaConnect, IP, Port);
+  TSoftEtherThread.Create(Self, seaConnect, IP, APort);
+end;
+
+// Находит в FMasterList сервер со статусом «Работает!» с наибольшей
+// заявленной скоростью (пинг — как второй критерий при равной скорости).
+// ExcludeIP позволяет исключить конкретный сервер — например, тот, с
+// которым только что оборвалась связь, при автопереподключении.
+function TForm1.FindBestServerRow(out IP: string; out Port: Integer; const ExcludeIP: string): Boolean;
+var
+  i: Integer;
+  Cols: TArray<string>;
+  Speed: Double;
+  Ping: Integer;
+  BestSpeed: Double;
+  BestPing: Integer;
+begin
+  Result := False;
+  IP := '';
+  Port := 0;
+  BestSpeed := -1;
+  BestPing := MaxInt;
+
+  for i := 0 to FMasterList.Count - 1 do
+  begin
+    Cols := FMasterList[i].Split([',']);
+    if Length(Cols) < 7 then Continue;
+    if Cols[6] <> 'Работает!' then Continue;
+    if (ExcludeIP <> '') and (Cols[0] = ExcludeIP) then Continue;
+
+    Speed := StrToFloatDef(Cols[4], 0);
+    Ping := StrToIntDef(Cols[3], MaxInt);
+
+    if (not Result) or (Speed > BestSpeed) or
+       ((Speed = BestSpeed) and (Ping < BestPing)) then
+    begin
+      BestSpeed := Speed;
+      BestPing := Ping;
+      IP := Cols[0];
+      Port := StrToIntDef(Cols[1], 443);
+      Result := True;
+    end;
+  end;
+end;
+
+procedure TForm1.MenuTrayQuickConnectClick(Sender: TObject);
+var
+  IP: string;
+  Port: Integer;
+begin
+  if not FindBestServerRow(IP, Port) then
+  begin
+    ShowMessage('Нет ни одного проверенного рабочего сервера. Сначала нажмите «Проверить серверы».');
+    Exit;
+  end;
+  ConnectToServer(IP, Port);
+end;
+
+// Подбирает следующий лучший сервер (кроме того, с которым только что
+// оборвалась связь) и переподключается к нему
+procedure TForm1.ReconnectToNextBestServer(const ExcludeIP: string);
+var
+  IP: string;
+  Port: Integer;
+begin
+  if not FindBestServerRow(IP, Port, ExcludeIP) then
+  begin
+    SetVpnStatusText('VPN: связь потеряна, замену для ' + ExcludeIP + ' не нашли');
+    SetConnectedServerIP('');
+    Exit;
+  end;
+  ConnectToServer(IP, Port);
+end;
+
+// Результат фоновой проверки активного подключения (см.
+// TConnectionMonitorThread) — решает, жива ли связь, и что делать при обрыве
+procedure TForm1.HandleMonitorResult(SessionAlive: Boolean; const PingText: string);
+const
+  MaxConsecutiveDrops = 2; // подряд неудачных проверок, прежде чем считать связь оборванной
+var
+  FailedIP: string;
+begin
+  if SessionAlive then
+  begin
+    FConsecutiveDrops := 0;
+    SetVpnStatusText('VPN: подключено к ' + FConnectedServerIP + ' (пинг: ' + PingText + ' мс)');
+    Exit;
+  end;
+
+  Inc(FConsecutiveDrops);
+
+  if FConsecutiveDrops < MaxConsecutiveDrops then
+  begin
+    SetVpnStatusText('VPN: ' + FConnectedServerIP + ' не отвечает, проверяю...');
+    Exit;
+  end;
+
+  if FReconnecting then Exit; // переподключение уже запущено этой же серией неудачных проверок
+
+  FailedIP := FConnectedServerIP;
+  if FAutoReconnectEnabled then
+  begin
+    FReconnecting := True;
+    SetVpnStatusText('VPN: связь с ' + FailedIP + ' потеряна, переподключение...');
+    ReconnectToNextBestServer(FailedIP);
+  end
+  else
+  begin
+    SetVpnStatusText('VPN: связь с ' + FailedIP + ' потеряна');
+    SetConnectedServerIP(''); // сама VPN-сессия может остаться висеть — это лишь снимает отметку в программе
+  end;
+end;
+
+procedure TForm1.PingTimerTimer(Sender: TObject);
+begin
+  if FConnectedServerIP = '' then Exit;
+  TConnectionMonitorThread.Create(Self, FConnectedServerIP, FConnectionGeneration);
 end;
 
 procedure TForm1.MenuDisconnectSoftEtherClick(Sender: TObject);
