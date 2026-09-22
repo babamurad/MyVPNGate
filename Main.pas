@@ -9,7 +9,8 @@ uses
   Clipbrd, System.NetEncoding,
   System.Net.URLClient, System.Net.HttpClient, System.Net.HttpClientComponent,
   Vcl.ComCtrls, System.ImageList, Vcl.ImgList, Vcl.Menus,
-  System.Generics.Collections, System.IOUtils, Winapi.ShellAPI, System.IniFiles;
+  System.Generics.Collections, System.IOUtils, Winapi.ShellAPI, System.IniFiles,
+  System.Win.Registry;
 
 type
   TForm1 = class; // Предварительное объявление
@@ -94,6 +95,10 @@ type
     MenuTrayExit: TMenuItem;
     ButtonSettings: TButton;
     UpdateTimer: TTimer;
+    LblCountry: TLabel;
+    ComboCountry: TComboBox;
+    ChkFavoritesOnly: TCheckBox;
+    MenuToggleFavorite: TMenuItem;
     procedure Button1Click(Sender: TObject);
     procedure Button2Click(Sender: TObject);
     procedure Button3Click(Sender: TObject);
@@ -120,6 +125,9 @@ type
     procedure MenuTrayExitClick(Sender: TObject);
     procedure ButtonSettingsClick(Sender: TObject);
     procedure UpdateTimerTimer(Sender: TObject);
+    procedure ComboCountryChange(Sender: TObject);
+    procedure ChkFavoritesOnlyClick(Sender: TObject);
+    procedure MenuToggleFavoriteClick(Sender: TObject);
   private
     FOvpnConfigs: TDictionary<string, string>; // IP -> декодированный .ovpn (заполняется при обновлении списка)
     FContextRow: Integer;                      // Строка, по которой кликнули правой кнопкой (для контекстного меню)
@@ -127,8 +135,11 @@ type
     FSortAscending: Boolean;                   // Направление текущей сортировки
     FVpnCmdPath: string;                       // Путь к vpncmd.exe (SoftEther VPN Client), находится один раз
     FConnectedServerIP: string;                // IP сервера, к которому сейчас поднято SoftEther-подключение ('' — нет)
-    FFullServerList: TStringList;              // Полный список серверов, отложенный в сторону фильтром «Оставить только рабочие» (nil — фильтр не активен)
-    FShowingWorkingOnly: Boolean;               // True, если сейчас показан отфильтрованный (только рабочие) список
+    FMasterList: TStringList;                  // Полный список серверов — единственный источник истины; таблица всегда перестраивается из него (см. RebuildGridFromMaster)
+    FShowingWorkingOnly: Boolean;               // True — в таблице показаны только серверы со статусом «Работает!»
+    FFilterCountry: string;                     // '' — все страны, иначе точное совпадение с колонкой «Страна»
+    FFavoritesOnly: Boolean;                    // True — в таблице показаны только избранные серверы
+    FFavorites: TStringList;                    // Множество IP избранных серверов (Sorted, без дублей)
     FAutoUpdateEnabled: Boolean;                // Включено ли автообновление списка серверов по таймеру
     FAutoUpdateMinutes: Integer;                // Интервал автообновления, в минутах
     procedure StartServerListUpdate(AIsAuto: Boolean);
@@ -146,6 +157,14 @@ type
     function EnsureElevatedForSoftEther: Boolean;
     procedure ApplicationMinimize(Sender: TObject);
     procedure RestoreFromTray;
+    procedure RebuildGridFromMaster;
+    procedure ApplySort;
+    procedure UpdateMasterStatus(const IP, NewStatus: string);
+    procedure PopulateCountryCombo;
+    procedure LoadFavorites;
+    procedure SaveFavorites;
+    function IsFavorite(const IP: string): Boolean;
+    procedure ToggleFavorite(const IP: string);
   public
     { Public declarations }
   end;
@@ -198,6 +217,10 @@ const
   DefaultAutoUpdateMinutes = 30;
   MinAutoUpdateMinutes = 5;
   MaxAutoUpdateMinutes = 1440; // сутки
+  FavoritesFile = 'favorites.txt';  // список избранных IP, по одному в строке
+  AllCountriesLabel = 'Все страны'; // пункт "без фильтра" в ComboCountry
+  AutoStartRegKey = 'Software\Microsoft\Windows\CurrentVersion\Run';
+  AutoStartValueName = 'MyVPNGate';
 
 // Запускает внешний процесс, скрыто (без окна), и возвращает весь его
 // стандартный вывод (stdout+stderr) одной строкой. Используется для вызова
@@ -401,6 +424,45 @@ begin
     Application.Terminate;
 end;
 
+// Автозапуск с Windows — обычный ключ Run в реестре текущего пользователя
+// (не требует прав администратора, в отличие от HKLM). Сам факт наличия
+// значения в реестре и есть текущее состояние настройки — отдельно на диске
+// её не храним, чтобы не разъезжались два источника истины.
+function IsAutoStartEnabled: Boolean;
+var
+  Reg: TRegistry;
+begin
+  Result := False;
+  Reg := TRegistry.Create(KEY_READ);
+  try
+    Reg.RootKey := HKEY_CURRENT_USER;
+    if Reg.OpenKeyReadOnly(AutoStartRegKey) then
+      Result := Reg.ValueExists(AutoStartValueName);
+  finally
+    Reg.Free;
+  end;
+end;
+
+procedure SetAutoStartEnabled(Enable: Boolean);
+var
+  Reg: TRegistry;
+begin
+  Reg := TRegistry.Create(KEY_WRITE);
+  try
+    Reg.RootKey := HKEY_CURRENT_USER;
+    if Reg.OpenKey(AutoStartRegKey, True) then
+    begin
+      if Enable then
+        // /minimized — при запуске сразу прячемся в трей, а не открываем окно
+        Reg.WriteString(AutoStartValueName, '"' + ParamStr(0) + '" /minimized')
+      else if Reg.ValueExists(AutoStartValueName) then
+        Reg.DeleteValue(AutoStartValueName);
+    end;
+  finally
+    Reg.Free;
+  end;
+end;
+
 { TSoftEtherThread }
 
 constructor TSoftEtherThread.Create(AForm: TForm1; AAction: TSoftEtherAction;
@@ -548,10 +610,21 @@ begin
 end;
 
 procedure TTCPCheckThread.UpdateUI;
+var
+  R: Integer;
 begin
-  // Безопасно обновляем статус в колонке "Статус" (индекс 7) для конкретной строки
-  if FRowIndex < FForm.StringGrid1.RowCount then
-    FForm.StringGrid1.Cells[7, FRowIndex] := FStatus;
+  // В FMasterList результат нужно сохранить всегда — иначе он потеряется
+  // при следующей перестройке таблицы (например, при смене фильтра)
+  FForm.UpdateMasterStatus(FIP, FStatus);
+
+  // Ищем строку в таблице по IP, а не по захваченному раньше FRowIndex — тот
+  // мог "уехать", пока проверка шла в фоне (сортировка, смена фильтра)
+  for R := 1 to FForm.StringGrid1.RowCount - 1 do
+    if Trim(FForm.StringGrid1.Cells[1, R]) = FIP then
+    begin
+      FForm.StringGrid1.Cells[7, R] := FStatus;
+      Break;
+    end;
 end;
 
 procedure TTCPCheckThread.Execute;
@@ -596,7 +669,6 @@ var
   SL, Columns: TStringList;
   i: Integer;
   FilePath: string;
-  RowIdx: Integer;
 begin
   StringGrid1.ColCount := 8;
   StringGrid1.FixedRows := 1;
@@ -618,9 +690,13 @@ begin
   FSortColumn := -1;
   FSortAscending := True;
   FVpnCmdPath := ''; // находим лениво, при первом обращении к SoftEther
-  FFullServerList := nil;
+  FMasterList := TStringList.Create;
   FShowingWorkingOnly := False;
+  FFilterCountry := '';
+  FFavoritesOnly := False;
   FConnectedServerIP := '';
+
+  LoadFavorites;
 
   // Заголовки колонок
   StringGrid1.Cells[0, 0] := '№';
@@ -666,54 +742,48 @@ begin
     StatusBar1.Panels[3].Text := 'Обновлено: —';
   end;
 
+  // Всё содержимое servers.txt читается прямо в FMasterList (тот же формат
+  // из 7 полей, что и внутри самого списка) — сама таблица заполняется уже
+  // из него через RebuildGridFromMaster, с учётом текущих фильтров/сортировки
   FilePath := ExtractFilePath(ParamStr(0)) + 'servers.txt';
-  if not FileExists(FilePath) then Exit;
-
-  SL := TStringList.Create;
-  Columns := TStringList.Create;
-  Columns.StrictDelimiter := True;
-  Columns.Delimiter := ',';
-
-  try
-    SL.LoadFromFile(FilePath);
-    if SL.Count > 0 then
-      StringGrid1.RowCount := SL.Count + 1;
-
-    RowIdx := 0;
-    for i := 0 to SL.Count - 1 do
-    begin
-      if Trim(SL[i]) = '' then Continue;
-      Columns.DelimitedText := SL[i];
-      if Columns.Count >= 7 then
+  if FileExists(FilePath) then
+  begin
+    SL := TStringList.Create;
+    Columns := TStringList.Create;
+    Columns.StrictDelimiter := True;
+    Columns.Delimiter := ',';
+    try
+      SL.LoadFromFile(FilePath);
+      for i := 0 to SL.Count - 1 do
       begin
-        Inc(RowIdx);
-        StringGrid1.Cells[0, RowIdx] := IntToStr(RowIdx);
-        StringGrid1.Cells[1, RowIdx] := Columns[0]; // IP
-        StringGrid1.Cells[2, RowIdx] := Columns[1]; // Порт
-        StringGrid1.Cells[3, RowIdx] := Columns[2]; // Страна
-        StringGrid1.Cells[4, RowIdx] := Columns[3]; // Пинг
-        StringGrid1.Cells[5, RowIdx] := Columns[4]; // Скорость
-        StringGrid1.Cells[6, RowIdx] := Columns[5]; // Протокол
-        StringGrid1.Cells[7, RowIdx] := Columns[6]; // Статус
+        if Trim(SL[i]) = '' then Continue;
+        Columns.DelimitedText := SL[i];
+        if Columns.Count >= 7 then
+          FMasterList.Add(SL[i]);
       end;
+    finally
+      SL.Free;
+      Columns.Free;
     end;
-
-    if RowIdx > 0 then
-      StringGrid1.RowCount := RowIdx + 1
-    else
-      StringGrid1.RowCount := 2;
-  finally
-    SL.Free;
-    Columns.Free;
   end;
 
-  UpdateStats;
+  PopulateCountryCombo;
+  RebuildGridFromMaster; // сама вызывает UpdateSortHeaders/UpdateStats
+
+  // Запуск по автозагрузке Windows (см. SetAutoStartEnabled) сразу сворачивает
+  // окно в трей, не показывая его на экране
+  if FindCmdLineSwitch('minimized') then
+  begin
+    Hide;
+    TrayIcon1.Visible := True;
+  end;
 end;
 
 procedure TForm1.FormDestroy(Sender: TObject);
 begin
   FOvpnConfigs.Free;
-  FFullServerList.Free;
+  FMasterList.Free;
+  FFavorites.Free;
 end;
 
 // Application.OnMinimize срабатывает при сворачивании главного окна —
@@ -856,7 +926,7 @@ end;
 procedure TForm1.ShowAutoUpdateSettingsDialog;
 var
   Dlg: TForm;
-  ChkEnabled: TCheckBox;
+  ChkEnabled, ChkAutoStart: TCheckBox;
   LblMinutes: TLabel;
   EditMinutes: TEdit;
   BtnOK, BtnCancel: TButton;
@@ -864,12 +934,12 @@ var
 begin
   Dlg := TForm.Create(Self);
   try
-    Dlg.Caption := 'Настройки автообновления';
+    Dlg.Caption := 'Настройки';
     Dlg.BorderStyle := bsDialog;
     Dlg.Position := poOwnerFormCenter;
     Dlg.Font := Self.Font;
     Dlg.ClientWidth := 340;
-    Dlg.ClientHeight := 150;
+    Dlg.ClientHeight := 186;
 
     ChkEnabled := TCheckBox.Create(Dlg);
     ChkEnabled.Parent := Dlg;
@@ -889,6 +959,12 @@ begin
     EditMinutes.NumbersOnly := True;
     EditMinutes.MaxLength := 5;
     EditMinutes.Text := IntToStr(FAutoUpdateMinutes);
+
+    ChkAutoStart := TCheckBox.Create(Dlg);
+    ChkAutoStart.Parent := Dlg;
+    ChkAutoStart.SetBounds(16, 108, 300, 20);
+    ChkAutoStart.Caption := 'Запускать вместе с Windows (свёрнуто в трей)';
+    ChkAutoStart.Checked := IsAutoStartEnabled;
 
     BtnOK := TButton.Create(Dlg);
     BtnOK.Parent := Dlg;
@@ -916,6 +992,8 @@ begin
       FAutoUpdateMinutes := Minutes;
       SaveAutoUpdateSettings;
       ApplyAutoUpdateTimer;
+
+      SetAutoStartEnabled(ChkAutoStart.Checked);
     end;
   finally
     Dlg.Free;
@@ -941,99 +1019,222 @@ begin
   end;
 end;
 
+// «Оставить только рабочие» — просто переключатель одного из фильтров;
+// сама перерисовка (и то, что скрытые серверы не теряются, а лишь не
+// показываются) обеспечивается тем, что RebuildGridFromMaster всегда
+// строит таблицу заново из FMasterList, который этот фильтр не трогает.
 procedure TForm1.Button3Click(Sender: TObject);
+begin
+  FShowingWorkingOnly := not FShowingWorkingOnly;
+  if FShowingWorkingOnly then
+    Button3.Caption := 'Показать все серверы'
+  else
+    Button3.Caption := 'Оставить только рабочие';
+  RebuildGridFromMaster;
+end;
+
+// Перестраивает StringGrid1 из FMasterList — единственное место, где
+// таблица заполняется данными. Применяет все активные фильтры (только
+// рабочие / страна / только избранное) и сохраняет текущую сортировку.
+procedure TForm1.RebuildGridFromMaster;
+var
+  i, RIdx: Integer;
+  Cols: TArray<string>;
+  IP, Status, Country: string;
+  Keep: Boolean;
+begin
+  RIdx := 0;
+
+  if FMasterList.Count > 0 then
+  begin
+    StringGrid1.RowCount := FMasterList.Count + 1;
+    for i := 0 to FMasterList.Count - 1 do
+    begin
+      Cols := FMasterList[i].Split([',']);
+      if Length(Cols) < 7 then Continue;
+
+      IP := Cols[0];
+      Country := Cols[2];
+      Status := Cols[6];
+
+      Keep := True;
+      if FShowingWorkingOnly and (Status <> 'Работает!') then Keep := False;
+      if Keep and (FFilterCountry <> '') and (Country <> FFilterCountry) then Keep := False;
+      if Keep and FFavoritesOnly and (not IsFavorite(IP)) then Keep := False;
+      if not Keep then Continue;
+
+      Inc(RIdx);
+      StringGrid1.Cells[0, RIdx] := IntToStr(RIdx);
+      StringGrid1.Cells[1, RIdx] := Cols[0];
+      StringGrid1.Cells[2, RIdx] := Cols[1];
+      StringGrid1.Cells[3, RIdx] := Cols[2];
+      StringGrid1.Cells[4, RIdx] := Cols[3];
+      StringGrid1.Cells[5, RIdx] := Cols[4];
+      StringGrid1.Cells[6, RIdx] := Cols[5];
+      StringGrid1.Cells[7, RIdx] := Cols[6];
+    end;
+  end;
+
+  if RIdx > 0 then
+    StringGrid1.RowCount := RIdx + 1
+  else
+  begin
+    StringGrid1.RowCount := 2;
+    for i := 0 to 7 do
+      StringGrid1.Cells[i, 1] := '';
+  end;
+
+  ApplySort;
+  UpdateSortHeaders;
+  UpdateStats;
+end;
+
+// Обновляет поле "Статус" (последнее из 7) в FMasterList для сервера с
+// данным IP. Вызывается после проверки (единичной или массовой), чтобы
+// результат не потерялся при следующей перестройке таблицы — например,
+// при смене фильтра.
+procedure TForm1.UpdateMasterStatus(const IP, NewStatus: string);
 var
   i: Integer;
   Cols: TArray<string>;
-  FilteredList: TStringList;
-
-  // Заполняет StringGrid1 строками из List (каждая строка — те же 7 полей,
-  // что использует SaveListToFile), либо очищает таблицу, если List пуст.
-  procedure FillGridFrom(List: TStringList);
-  var
-    j, R: Integer;
-    C: TArray<string>;
+begin
+  for i := 0 to FMasterList.Count - 1 do
   begin
-    if List.Count > 0 then
-      StringGrid1.RowCount := List.Count + 1
+    Cols := FMasterList[i].Split([',']);
+    if (Length(Cols) >= 7) and (Cols[0] = IP) then
+    begin
+      FMasterList[i] := Cols[0] + ',' + Cols[1] + ',' + Cols[2] + ',' +
+        Cols[3] + ',' + Cols[4] + ',' + Cols[5] + ',' + NewStatus;
+      Break;
+    end;
+  end;
+end;
+
+// Заполняет ComboCountry уникальными странами из FMasterList (плюс пункт
+// "Все страны" сверху). Вызывается после каждой загрузки списка. Если
+// страна, на которую был установлен фильтр, больше не встречается —
+// сбрасывает его, а не оставляет таблицу молча пустой.
+procedure TForm1.PopulateCountryCombo;
+var
+  i, Idx: Integer;
+  Cols: TArray<string>;
+  Countries: TStringList;
+  PrevSelected: string;
+begin
+  PrevSelected := FFilterCountry;
+
+  Countries := TStringList.Create;
+  try
+    Countries.Sorted := True;
+    Countries.Duplicates := dupIgnore;
+    for i := 0 to FMasterList.Count - 1 do
+    begin
+      Cols := FMasterList[i].Split([',']);
+      if (Length(Cols) >= 7) and (Trim(Cols[2]) <> '') then
+        Countries.Add(Cols[2]);
+    end;
+
+    ComboCountry.Items.BeginUpdate;
+    try
+      ComboCountry.Items.Clear;
+      ComboCountry.Items.Add(AllCountriesLabel);
+      ComboCountry.Items.AddStrings(Countries);
+    finally
+      ComboCountry.Items.EndUpdate;
+    end;
+  finally
+    Countries.Free;
+  end;
+
+  if PrevSelected <> '' then
+  begin
+    Idx := ComboCountry.Items.IndexOf(PrevSelected);
+    if Idx >= 0 then
+      ComboCountry.ItemIndex := Idx
     else
     begin
-      StringGrid1.RowCount := 2;
-      for j := 0 to 7 do
-        StringGrid1.Cells[j, 1] := '';
-      Exit;
+      FFilterCountry := '';
+      ComboCountry.ItemIndex := 0;
     end;
+  end
+  else
+    ComboCountry.ItemIndex := 0;
+end;
 
-    for j := 0 to List.Count - 1 do
-    begin
-      R := j + 1;
-      C := List[j].Split([',']);
-      if Length(C) >= 7 then
-      begin
-        StringGrid1.Cells[0, R] := IntToStr(R);
-        StringGrid1.Cells[1, R] := C[0];
-        StringGrid1.Cells[2, R] := C[1];
-        StringGrid1.Cells[3, R] := C[2];
-        StringGrid1.Cells[4, R] := C[3];
-        StringGrid1.Cells[5, R] := C[4];
-        StringGrid1.Cells[6, R] := C[5];
-        StringGrid1.Cells[7, R] := C[6];
-      end;
-    end;
-  end;
-
+procedure TForm1.ComboCountryChange(Sender: TObject);
 begin
-  if FShowingWorkingOnly then
-  begin
-    // Повторное нажатие — просто возвращаем ранее отложенный полный список,
-    // ничего заново скачивать/проверять не нужно
-    if Assigned(FFullServerList) then
-    begin
-      FillGridFrom(FFullServerList);
-      FreeAndNil(FFullServerList);
-    end;
-    FShowingWorkingOnly := False;
-    Button3.Caption := 'Оставить только рабочие';
-    SaveListToFile;
-    UpdateStats;
-    Exit;
-  end;
+  if ComboCountry.ItemIndex <= 0 then
+    FFilterCountry := ''
+  else
+    FFilterCountry := ComboCountry.Items[ComboCountry.ItemIndex];
+  RebuildGridFromMaster;
+end;
 
-  // Первое нажатие — прячем неработающие серверы из таблицы, но не удаляем
-  // их совсем: сервер может быть просто временно недоступен и заработать
-  // позже, поэтому полный список сохраняем в памяти и на диске, чтобы его
-  // можно было вернуть повторным нажатием этой же кнопки.
-  FreeAndNil(FFullServerList);
-  FFullServerList := TStringList.Create;
-  for i := 1 to StringGrid1.RowCount - 1 do
-  begin
-    if Trim(StringGrid1.Cells[1, i]) <> '' then
-      FFullServerList.Add(StringGrid1.Cells[1, i] + ',' + // IP
-                           StringGrid1.Cells[2, i] + ',' + // Порт
-                           StringGrid1.Cells[3, i] + ',' + // Страна
-                           StringGrid1.Cells[4, i] + ',' + // Пинг
-                           StringGrid1.Cells[5, i] + ',' + // Скорость
-                           StringGrid1.Cells[6, i] + ',' + // Протокол
-                           StringGrid1.Cells[7, i]);       // Статус
-  end;
-  FFullServerList.SaveToFile(ExtractFilePath(ParamStr(0)) + 'servers.txt');
+procedure TForm1.ChkFavoritesOnlyClick(Sender: TObject);
+begin
+  FFavoritesOnly := ChkFavoritesOnly.Checked;
+  RebuildGridFromMaster;
+end;
 
-  FilteredList := TStringList.Create;
+// Читает favorites.txt (по одному IP в строке) рядом с исполняемым файлом.
+// Список избранного не зависит от FMasterList и переживает обновления —
+// сверяется по IP, а не по номеру строки.
+procedure TForm1.LoadFavorites;
+begin
+  FreeAndNil(FFavorites);
+  FFavorites := TStringList.Create;
+  FFavorites.Sorted := True;
+  FFavorites.Duplicates := dupIgnore;
+  FFavorites.CaseSensitive := False;
   try
-    for i := 0 to FFullServerList.Count - 1 do
-    begin
-      Cols := FFullServerList[i].Split([',']);
-      if (Length(Cols) >= 7) and (Cols[6] = 'Работает!') then
-        FilteredList.Add(FFullServerList[i]);
-    end;
-    FillGridFrom(FilteredList);
-  finally
-    FilteredList.Free;
+    if FileExists(ExtractFilePath(ParamStr(0)) + FavoritesFile) then
+      FFavorites.LoadFromFile(ExtractFilePath(ParamStr(0)) + FavoritesFile);
+  except
+    // Файла может не быть при первом запуске — начинаем с пустого списка
   end;
+end;
 
-  FShowingWorkingOnly := True;
-  Button3.Caption := 'Показать все серверы';
-  UpdateStats;
+procedure TForm1.SaveFavorites;
+begin
+  try
+    FFavorites.SaveToFile(ExtractFilePath(ParamStr(0)) + FavoritesFile);
+  except
+    // Не критично, если не удалось сохранить на диск
+  end;
+end;
+
+function TForm1.IsFavorite(const IP: string): Boolean;
+begin
+  Result := Assigned(FFavorites) and (FFavorites.IndexOf(IP) >= 0);
+end;
+
+procedure TForm1.ToggleFavorite(const IP: string);
+var
+  Idx: Integer;
+begin
+  if (IP = '') or (not Assigned(FFavorites)) then Exit;
+
+  Idx := FFavorites.IndexOf(IP);
+  if Idx >= 0 then
+    FFavorites.Delete(Idx)
+  else
+    FFavorites.Add(IP);
+
+  SaveFavorites;
+
+  if FFavoritesOnly then
+    RebuildGridFromMaster // сервер мог как раз исчезнуть/появиться в отфильтрованном виде
+  else
+    StringGrid1.Invalidate; // иначе достаточно перерисовать маркер "★" у строки
+end;
+
+procedure TForm1.MenuToggleFavoriteClick(Sender: TObject);
+var
+  IP: string;
+begin
+  if (FContextRow <= 0) or (FContextRow >= StringGrid1.RowCount) then Exit;
+  IP := Trim(StringGrid1.Cells[1, FContextRow]);
+  ToggleFavorite(IP);
 end;
 
 procedure TForm1.ButtonInfoClick(Sender: TObject);
@@ -1071,8 +1272,13 @@ begin
       'часами) вместо панели задач; вернуть окно — двойным кликом по ' +
       'значку или пунктом «Показать» его меню по правому клику.' + sLineBreak +
     '  9. Кнопка «Настройки» включает автоматическое обновление списка ' +
-      'серверов по таймеру и позволяет задать интервал (в минутах).' +
-      sLineBreak + sLineBreak +
+      'серверов по таймеру, позволяет задать интервал (в минутах) и ' +
+      'запуск программы вместе с Windows (сразу свёрнутой в трей).' + sLineBreak +
+    '  10. Список «Страна» и галочка «Только избранное» над таблицей ' +
+      'фильтруют её по стране и/или показывают только отмеченные серверы.' + sLineBreak +
+    '  11. Пункт контекстного меню «Добавить/Убрать из избранного» отмечает ' +
+      'сервер значком «★» — такая отметка не пропадает при обновлении ' +
+      'списка и сортировке (сверяется по IP).' + sLineBreak + sLineBreak +
 
     'Статус «Работает!» означает только то, что TCP-порт сервера принял ' +
     'соединение — это не гарантирует рабочий VPN-туннель. Если конкретный ' +
@@ -1152,11 +1358,16 @@ begin
     StringGrid1.Canvas.Font.Style := [];
   end;
 
-  // На IP-ячейке подключённого сервера добавляем маркер — саму ячейку
+  // На IP-ячейке добавляем маркеры избранного/подключения — саму ячейку
   // (Cells[]) не трогаем, чтобы не сломать сортировку/сохранение/экспорт
   CellText := StringGrid1.Cells[ACol, ARow];
-  if IsConnectedRow and (ACol = 1) then
-    CellText := Chr(9679) + ' ' + CellText; // ●
+  if ACol = 1 then
+  begin
+    if IsFavorite(Trim(StringGrid1.Cells[1, ARow])) then
+      CellText := Chr(9733) + ' ' + CellText; // ★
+    if IsConnectedRow then
+      CellText := Chr(9679) + ' ' + CellText; // ●
+  end;
 
   StringGrid1.Canvas.TextRect(Rect, Rect.Left + 8, Rect.Top + 6, CellText);
 end;
@@ -1203,15 +1414,78 @@ begin
   end;
 end;
 
-procedure TForm1.StringGrid1MouseDown(Sender: TObject; Button: TMouseButton;
-  Shift: TShiftState; X, Y: Integer);
+// Сортирует текущее содержимое таблицы по FSortColumn/FSortAscending —
+// используется и по клику на шапку колонки, и при перестроении таблицы
+// после смены фильтра (RebuildGridFromMaster), чтобы выбранная сортировка
+// не сбрасывалась при переключении фильтров.
+procedure TForm1.ApplySort;
 var
-  ACol, ARow: Integer;
   i, j: Integer;
   TempRow: TArray<string>;
   Swapped: Boolean;
   Direction, Cmp: Integer;
   Va, Vb: Double;
+begin
+  if FSortColumn = -1 then Exit;
+
+  if FSortAscending then
+    Direction := 1
+  else
+    Direction := -1;
+
+  SetLength(TempRow, StringGrid1.ColCount);
+
+  repeat
+    Swapped := False;
+    for i := 1 to StringGrid1.RowCount - 2 do
+    begin
+      if Trim(StringGrid1.Cells[1, i]) = '' then Break;
+
+      // IP (1) — сравнение по октетам; Порт (2) и Пинг (4) — целые числа;
+      // Скорость (5) — дробное число; Страна (3) — обычный текст
+      case FSortColumn of
+        1: Cmp := CompareIP(StringGrid1.Cells[FSortColumn, i], StringGrid1.Cells[FSortColumn, i + 1]);
+        2, 4: Cmp := StrToIntDef(StringGrid1.Cells[FSortColumn, i], 0) -
+                     StrToIntDef(StringGrid1.Cells[FSortColumn, i + 1], 0);
+        5:
+          begin
+            Va := StrToFloatDef(StringGrid1.Cells[FSortColumn, i], 0);
+            Vb := StrToFloatDef(StringGrid1.Cells[FSortColumn, i + 1], 0);
+            if Va > Vb then Cmp := 1
+            else if Va < Vb then Cmp := -1
+            else Cmp := 0;
+          end;
+      else
+        Cmp := AnsiCompareText(StringGrid1.Cells[FSortColumn, i], StringGrid1.Cells[FSortColumn, i + 1]);
+      end;
+
+      if Cmp * Direction > 0 then
+      begin
+        for j := 0 to StringGrid1.ColCount - 1 do
+        begin
+          TempRow[j] := StringGrid1.Cells[j, i];
+          StringGrid1.Cells[j, i] := StringGrid1.Cells[j, i + 1];
+          StringGrid1.Cells[j, i + 1] := TempRow[j];
+        end;
+        Swapped := True;
+      end;
+    end;
+  until not Swapped;
+
+  // Перенумеровываем колонку № (индекс 0) после сортировки
+  for i := 1 to StringGrid1.RowCount - 1 do
+  begin
+    if Trim(StringGrid1.Cells[1, i]) <> '' then
+      StringGrid1.Cells[0, i] := IntToStr(i)
+    else
+      StringGrid1.Cells[0, i] := '';
+  end;
+end;
+
+procedure TForm1.StringGrid1MouseDown(Sender: TObject; Button: TMouseButton;
+  Shift: TShiftState; X, Y: Integer);
+var
+  ACol, ARow: Integer;
   HasRow: Boolean;
   ScreenPt: TPoint;
 begin
@@ -1236,6 +1510,12 @@ begin
     MenuSaveOvpn.Enabled := HasRow;
     MenuConnectSoftEther.Enabled := HasRow;
 
+    MenuToggleFavorite.Enabled := HasRow;
+    if HasRow and IsFavorite(Trim(StringGrid1.Cells[1, ARow])) then
+      MenuToggleFavorite.Caption := 'Убрать из избранного'
+    else
+      MenuToggleFavorite.Caption := 'Добавить в избранное';
+
     // X, Y в OnMouseDown — координаты относительно самого грида (клиентские),
     // а Popup ждёт экранные — переводим через ClientToScreen.
     ScreenPt := StringGrid1.ClientToScreen(Point(X, Y));
@@ -1259,59 +1539,7 @@ begin
       FSortAscending := True;
     end;
 
-    if FSortAscending then
-      Direction := 1
-    else
-      Direction := -1;
-
-    SetLength(TempRow, StringGrid1.ColCount);
-
-    repeat
-      Swapped := False;
-      for i := 1 to StringGrid1.RowCount - 2 do
-      begin
-        if Trim(StringGrid1.Cells[1, i]) = '' then Break;
-
-        // IP (1) — сравнение по октетам; Порт (2) и Пинг (4) — целые числа;
-        // Скорость (5) — дробное число; Страна (3) — обычный текст
-        case ACol of
-          1: Cmp := CompareIP(StringGrid1.Cells[ACol, i], StringGrid1.Cells[ACol, i + 1]);
-          2, 4: Cmp := StrToIntDef(StringGrid1.Cells[ACol, i], 0) -
-                       StrToIntDef(StringGrid1.Cells[ACol, i + 1], 0);
-          5:
-            begin
-              Va := StrToFloatDef(StringGrid1.Cells[ACol, i], 0);
-              Vb := StrToFloatDef(StringGrid1.Cells[ACol, i + 1], 0);
-              if Va > Vb then Cmp := 1
-              else if Va < Vb then Cmp := -1
-              else Cmp := 0;
-            end;
-        else
-          Cmp := AnsiCompareText(StringGrid1.Cells[ACol, i], StringGrid1.Cells[ACol, i + 1]);
-        end;
-
-        if Cmp * Direction > 0 then
-        begin
-          for j := 0 to StringGrid1.ColCount - 1 do
-          begin
-            TempRow[j] := StringGrid1.Cells[j, i];
-            StringGrid1.Cells[j, i] := StringGrid1.Cells[j, i + 1];
-            StringGrid1.Cells[j, i + 1] := TempRow[j];
-          end;
-          Swapped := True;
-        end;
-      end;
-    until not Swapped;
-
-    // Перенумеровываем колонку № (индекс 0) после сортировки
-    for i := 1 to StringGrid1.RowCount - 1 do
-    begin
-      if Trim(StringGrid1.Cells[1, i]) <> '' then
-        StringGrid1.Cells[0, i] := IntToStr(i)
-      else
-        StringGrid1.Cells[0, i] := '';
-    end;
-
+    ApplySort;
     UpdateSortHeaders;
   end;
 end;
@@ -1510,29 +1738,15 @@ begin
   Accepted := True;
 end;
 
+// Сохраняет FMasterList (полный список, независимо от текущих фильтров) —
+// а не содержимое таблицы, которое может быть отфильтрованным подмножеством
 procedure TForm1.SaveListToFile;
-var
-  SL: TStringList;
-  i: Integer;
 begin
-  SL := TStringList.Create;
   try
-    for i := 1 to StringGrid1.RowCount - 1 do
-    begin
-      if Trim(StringGrid1.Cells[1, i]) <> '' then
-      begin
-        SL.Add(StringGrid1.Cells[1, i] + ',' + // IP
-               StringGrid1.Cells[2, i] + ',' + // Порт
-               StringGrid1.Cells[3, i] + ',' + // Страна
-               StringGrid1.Cells[4, i] + ',' + // Пинг
-               StringGrid1.Cells[5, i] + ',' + // Скорость
-               StringGrid1.Cells[6, i] + ',' + // Протокол
-               StringGrid1.Cells[7, i]);       // Статус
-      end;
-    end;
-    SL.SaveToFile(ExtractFilePath(ParamStr(0)) + 'servers.txt');
-  finally
-    SL.Free;
+    FMasterList.SaveToFile(ExtractFilePath(ParamStr(0)) + 'servers.txt');
+  except
+    // Не критично, если не удалось сохранить — при следующем успешном
+    // обновлении список на диске всё равно перезапишется
   end;
 end;
 
@@ -1697,8 +1911,6 @@ end;
 procedure TUpdateThread.UpdateUI;
 var
   i: Integer;
-  Cols: TArray<string>;
-  RowIdx: Integer;
   UpdatedText: string;
 begin
   // Возвращаем кнопку на место и скрываем прогресс-бар
@@ -1716,33 +1928,17 @@ begin
   end;
 
   // Список действительно загрузился — теперь можно сбросить старый фильтр
-  // «Оставить только рабочие»: отложенный им список сейчас всё равно
-  // заменится свежими данными
-  FreeAndNil(FForm.FFullServerList);
+  // «Оставить только рабочие»: у всех свежих серверов статус ещё "Ожидание",
+  // и показывать сразу пустую таблицу в этом фильтре было бы странно.
+  // Фильтр по стране и «Только избранное» — не связаны со статусом проверки,
+  // их не трогаем (PopulateCountryCombo сам сбросит страну, если она вдруг
+  // пропала из нового списка).
   FForm.FShowingWorkingOnly := False;
   FForm.Button3.Caption := 'Оставить только рабочие';
 
-  if FTempServers.Count > 0 then
-    FForm.StringGrid1.RowCount := FTempServers.Count + 1
-  else
-    FForm.StringGrid1.RowCount := 2;
-
+  FForm.FMasterList.Clear;
   for i := 0 to FTempServers.Count - 1 do
-  begin
-    RowIdx := i + 1;
-    Cols := FTempServers[i].Split([',']);
-    if Length(Cols) >= 7 then
-    begin
-      FForm.StringGrid1.Cells[0, RowIdx] := IntToStr(RowIdx); // №
-      FForm.StringGrid1.Cells[1, RowIdx] := Cols[0];          // IP
-      FForm.StringGrid1.Cells[2, RowIdx] := Cols[1];          // Порт
-      FForm.StringGrid1.Cells[3, RowIdx] := Cols[2];          // Страна
-      FForm.StringGrid1.Cells[4, RowIdx] := Cols[3];          // Пинг
-      FForm.StringGrid1.Cells[5, RowIdx] := Cols[4];          // Скорость
-      FForm.StringGrid1.Cells[6, RowIdx] := Cols[5];          // Протокол
-      FForm.StringGrid1.Cells[7, RowIdx] := Cols[6];          // Статус
-    end;
-  end;
+    FForm.FMasterList.Add(FTempServers[i]);
 
   // Передаем свежесобранный словарь .ovpn-конфигов форме (используется контекстным
   // меню «Сохранить .ovpn файл») и освобождаем предыдущий
@@ -1752,10 +1948,11 @@ begin
 
   // Свежий список ещё не отсортирован — сбрасываем стрелку в шапке таблицы
   FForm.FSortColumn := -1;
-  FForm.UpdateSortHeaders;
+
+  FForm.PopulateCountryCombo;
+  FForm.RebuildGridFromMaster; // сама вызывает UpdateSortHeaders/UpdateStats
 
   FForm.SaveListToFile;
-  FForm.UpdateStats;
 
   // Отмечаем момент успешного обновления — и на экране, и на диске, чтобы
   // при следующем запуске программы было видно, насколько свежий список
