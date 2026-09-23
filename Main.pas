@@ -61,6 +61,8 @@ type
     FServerPort: Integer;
     FStatusText: string;
     FConnectedIP: string; // IP сервера, который нужно (пере)отметить подключённым в таблице ('' — снять отметку)
+    FAttemptId: Integer;  // номер этой попытки (см. TForm1.FSoftEtherAttemptId)
+    function Superseded: Boolean;
     function RunCmd(const Args: string; out Output: string; LogOutput: Boolean = True): DWORD;
     procedure SyncStatus;
     procedure SyncConnectedIP;
@@ -211,6 +213,7 @@ type
     FAutoUpdateMinutes: Integer;                // Интервал автообновления, в минутах
     FAutoReconnectEnabled: Boolean;             // Переподключаться ли автоматически к другому серверу при обрыве связи
     FConnectionGeneration: Integer;             // Увеличивается при каждом (пере)подключении/отключении — отсекает устаревшие результаты фоновых проверок
+    FSoftEtherAttemptId: Integer;               // Номер последнего запущенного TSoftEtherThread — более старые потоки по нему понимают, что их попытка уже отменена
     FConsecutiveDrops: Integer;                 // Сколько подряд проверок связи подряд не прошли
     FReconnecting: Boolean;                     // True между обнаружением обрыва и стартом нового TSoftEtherThread — не даёт запустить переподключение дважды подряд
     FCascadeAttemptIPs: TStringList;            // IP серверов, уже испробованных в текущем каскаде подключения (nil — каскад не идёт)
@@ -723,20 +726,37 @@ begin
   FAction := AAction;
   FServerIP := AServerIP;
   FServerPort := AServerPort;
+  // Конструктор вызывается из главного потока, так что счётчик меняется
+  // только здесь, без гонок
+  Inc(AForm.FSoftEtherAttemptId);
+  FAttemptId := AForm.FSoftEtherAttemptId;
+end;
+
+// Запущена ли после этой попытки новая (подключение к другому серверу или
+// отключение). Новая попытка первым делом делает AccountDisconnect, и без
+// этой проверки старый поток видел в AccountStatusGet «not connected»
+// (код 37) и сообщал ошибку уже про СВОЙ сервер — в статус-баре оказывалась
+// чужая ошибка, а в каскаде ещё и запускался лишний шаг перебора.
+function TSoftEtherThread.Superseded: Boolean;
+begin
+  Result := FAttemptId <> FForm.FSoftEtherAttemptId;
 end;
 
 procedure TSoftEtherThread.SyncStatus;
 begin
+  if Superseded then Exit;
   FForm.SetVpnStatusText(FStatusText);
 end;
 
 procedure TSoftEtherThread.SyncConnectedIP;
 begin
+  if Superseded then Exit;
   FForm.SetConnectedServerIP(FConnectedIP);
 end;
 
 procedure TSoftEtherThread.SyncConnectFailed;
 begin
+  if Superseded then Exit;
   FForm.SetVpnStatusText(FStatusText);
   FForm.HandleConnectAttemptFailed(FServerIP);
 end;
@@ -801,6 +821,7 @@ begin
   // параметры, включая NoUdpAcceleration (см. BuildSoftEtherAccountFile).
   // Сначала удаляем прежнюю версию — если её не было, ошибка безвредна.
   RunCmd('AccountDelete ' + SoftEtherAccountName, Output);
+  if Superseded then Exit;
 
   ConfigPath := ExtractFilePath(ParamStr(0)) + 'softether_account.vpn';
   try
@@ -823,6 +844,7 @@ begin
   // поэтому каскад перебора серверов на ней не продолжаем (SyncStatus, а не
   // SyncConnectFailed).
   ExitCode := RunCmd('AccountImport "' + ConfigPath + '"', Output);
+  if Superseded then Exit;
   if ExitCode <> 0 then
   begin
     FStatusText := 'VPN: SoftEther не принял настройки подключения: ' + CompactVpnCmdOutput(Output);
@@ -834,8 +856,10 @@ begin
   // реальный отдельной командой, как и раньше
   RunCmd(Format('AccountPasswordSet %s /PASSWORD:%s /TYPE:standard',
     [SoftEtherAccountName, SoftEtherPassword]), Output);
+  if Superseded then Exit;
 
   ExitCode := RunCmd('AccountConnect ' + SoftEtherAccountName, Output);
+  if Superseded then Exit;
   if ExitCode <> 0 then
   begin
     FStatusText := 'VPN: SoftEther не запустил подключение: ' + CompactVpnCmdOutput(Output);
@@ -858,7 +882,13 @@ begin
   for Attempt := 1 to 60 do
   begin
     Sleep(1000);
+    if Superseded then
+    begin
+      AppendSoftEtherLog('Попытка подключения к ' + FServerIP + ' прервана новой попыткой');
+      Exit;
+    end;
     ExitCode := RunCmd('AccountStatusGet ' + SoftEtherAccountName, Output, False);
+    if Superseded then Exit; // ответ мог относиться уже к новой попытке
     // В журнал — только когда ответ изменился, а не 60 одинаковых копий
     if Output <> LastStatusOutput then
     begin
@@ -867,8 +897,15 @@ begin
       LastStatusOutput := Output;
     end;
     LowerOutput := LowerCase(Output);
-    if ExtractSessionStatus(Output) <> '' then
+    if (ExtractSessionStatus(Output) <> '') and (ExtractSessionStatus(Output) <> SessionStatus) then
+    begin
       SessionStatus := ExtractSessionStatus(Output);
+      // Показываем живой статус SoftEther: "Retrying" уже через секунду —
+      // значит, первое же соединение с сервером не удалось, и SoftEther
+      // пробует снова (раз в RetryInterval секунд)
+      FStatusText := 'VPN: подключение к ' + FServerIP + '... (SoftEther: ' + SessionStatus + ')';
+      Synchronize(SyncStatus);
+    end;
 
     // Реальный текст успешного статуса (проверено по живому выводу
     // AccountStatusGet) — не "Connected", а:
