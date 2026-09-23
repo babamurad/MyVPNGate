@@ -1262,6 +1262,10 @@ object Form1: TForm1
       Caption = #1057#1086#1093#1088#1072#1085#1080#1090#1100' .ovpn '#1092#1072#1081#1083'...'
       OnClick = MenuSaveOvpnClick
     end
+    object MenuShowQR: TMenuItem
+      Caption = 'QR-'#1082#1086#1076' '#1076#1083#1103' Android'
+      OnClick = MenuShowQRClick
+    end
     object MenuToggleFavorite: TMenuItem
       Caption = #1044#1086#1073#1072#1074#1080#1090#1100' '#1074' '#1080#1079#1073#1088#1072#1085#1085#1086#1077
       OnClick = MenuToggleFavoriteClick

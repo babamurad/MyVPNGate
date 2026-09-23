@@ -10,7 +10,7 @@ uses
   System.Net.URLClient, System.Net.HttpClient, System.Net.HttpClientComponent,
   Vcl.ComCtrls, System.ImageList, Vcl.ImgList, Vcl.Menus,
   System.Generics.Collections, System.IOUtils, Winapi.ShellAPI, System.IniFiles,
-  System.Win.Registry, System.JSON;
+  System.Win.Registry, System.JSON, Vcl.Imaging.pngimage;
 
 type
   TForm1 = class; // Предварительное объявление
@@ -109,6 +109,24 @@ type
     constructor Create(AForm: TForm1; ASilent: Boolean);
   end;
 
+  // Скачивает готовое PNG-изображение QR-кода с внешнего сервиса
+  // api.qrserver.com (никакой QR-кодировщик в саму программу не встраиваем —
+  // это отдельный, довольно объёмный алгоритм, а тут кодируется всего
+  // IP:Порт, пара десятков байт). QR специально не содержит сам .ovpn —
+  // см. комментарий у TForm1.ShowServerQRCode.
+  TQRCodeFetchThread = class(TThread)
+  private
+    FForm: TForm1;
+    FQRText: string;
+    FSuccess: Boolean;
+    FImageBytes: TBytes;
+    procedure SyncResult;
+  protected
+    procedure Execute; override;
+  public
+    constructor Create(AForm: TForm1; const AQRText: string);
+  end;
+
   TForm1 = class(TForm)
     Panel1: TPanel;
     Button1: TButton;
@@ -139,6 +157,7 @@ type
     ComboCountry: TComboBox;
     ChkFavoritesOnly: TCheckBox;
     MenuToggleFavorite: TMenuItem;
+    MenuShowQR: TMenuItem;
     PingTimer: TTimer;
     MenuTrayQuickConnect: TMenuItem;
     MenuTrayCheckUpdate: TMenuItem;
@@ -171,6 +190,7 @@ type
     procedure ComboCountryChange(Sender: TObject);
     procedure ChkFavoritesOnlyClick(Sender: TObject);
     procedure MenuToggleFavoriteClick(Sender: TObject);
+    procedure MenuShowQRClick(Sender: TObject);
     procedure PingTimerTimer(Sender: TObject);
     procedure MenuTrayQuickConnectClick(Sender: TObject);
     procedure MenuTrayCheckUpdateClick(Sender: TObject);
@@ -225,6 +245,7 @@ type
     procedure StartCascadeConnect(const InitialExcludeIP: string);
     procedure TryNextCascadeCandidate;
     procedure HandleConnectAttemptFailed(const FailedIP: string);
+    procedure ShowServerQRCode(const QRText: string; const ImageBytes: TBytes; Success: Boolean);
   public
     { Public declarations }
   end;
@@ -864,6 +885,63 @@ begin
     except
       // Нет сети, репозиторий недоступен, релизов ещё нет и т.п. — тихо
       // считаем, что проверить не удалось, ничего не роняем
+      FSuccess := False;
+    end;
+  finally
+    Client.Free;
+  end;
+
+  Synchronize(SyncResult);
+end;
+
+{ TQRCodeFetchThread }
+
+constructor TQRCodeFetchThread.Create(AForm: TForm1; const AQRText: string);
+begin
+  inherited Create(False);
+  FreeOnTerminate := True;
+  FForm := AForm;
+  FQRText := AQRText;
+end;
+
+procedure TQRCodeFetchThread.SyncResult;
+begin
+  FForm.ShowServerQRCode(FQRText, FImageBytes, FSuccess);
+end;
+
+procedure TQRCodeFetchThread.Execute;
+var
+  Client: TNetHTTPClient;
+  Response: IHTTPResponse;
+  Url: string;
+  MS: TMemoryStream;
+begin
+  FSuccess := False;
+  Client := TNetHTTPClient.Create(nil);
+  try
+    try
+      Url := 'https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=' +
+        TNetEncoding.URL.Encode(FQRText);
+      Response := Client.Get(Url);
+      if (Response.StatusCode = 200) and Assigned(Response.ContentStream) then
+      begin
+        // Через ContentStream, а не готовый ContentAsBytes — так надёжнее:
+        // это самый базовый способ добраться до тела ответа, доступный
+        // независимо от версии Delphi.
+        MS := TMemoryStream.Create;
+        try
+          Response.ContentStream.Position := 0;
+          MS.CopyFrom(Response.ContentStream, 0);
+          SetLength(FImageBytes, MS.Size);
+          if MS.Size > 0 then
+            Move(MS.Memory^, FImageBytes[0], MS.Size);
+          FSuccess := MS.Size > 0;
+        finally
+          MS.Free;
+        end;
+      end;
+    except
+      // Нет сети, сервис недоступен и т.п. — тихо считаем, что не получилось
       FSuccess := False;
     end;
   finally
@@ -1589,7 +1667,11 @@ begin
       'при запуске), и предложит открыть страницу загрузки, если она есть. ' +
       'Проверить вручную можно пунктом «Проверить обновления программы» в ' +
       'меню значка в трее. Сама себя программа не обновляет — только ' +
-      'сообщает о новой версии.' + sLineBreak + sLineBreak +
+      'сообщает о новой версии.' + sLineBreak +
+    '  15. Пункт «QR-код для Android» в контекстном меню сервера показывает ' +
+      'QR-код с его адресом и портом — для будущего Android-приложения ' +
+      'MyVPNGate (сам .ovpn в QR не помещается, а обычный OpenVPN Connect ' +
+      'такой QR не распознает).' + sLineBreak + sLineBreak +
 
     'Статус «Работает!» означает только то, что TCP-порт сервера принял ' +
     'соединение — это не гарантирует рабочий VPN-туннель. Если конкретный ' +
@@ -1821,6 +1903,7 @@ begin
     MenuCopyPort.Enabled := HasRow;
     MenuRecheckServer.Enabled := HasRow;
     MenuSaveOvpn.Enabled := HasRow;
+    MenuShowQR.Enabled := HasRow;
     MenuConnectSoftEther.Enabled := HasRow;
 
     MenuToggleFavorite.Enabled := HasRow;
@@ -1915,6 +1998,97 @@ begin
       on E: Exception do
         ShowMessage('Не удалось сохранить файл: ' + E.Message);
     end;
+  end;
+end;
+
+// QR специально кодирует только "IP:Порт" сервера, а не сам .ovpn целиком —
+// у полного конфига внутри вшиты сертификат, ключ и CA (несколько КБ base64),
+// это не помещается в надёжно сканируемый QR-код. Обычный OpenVPN Connect
+// такой QR тоже не распознает — предполагается, что его будет читать
+// отдельное будущее Android-приложение MyVPNGate, которое само достанет
+// актуальный конфиг с сервера VPN Gate по этому IP в момент сканирования.
+procedure TForm1.MenuShowQRClick(Sender: TObject);
+var
+  IP: string;
+  Port: Integer;
+begin
+  if (FContextRow <= 0) or (FContextRow >= StringGrid1.RowCount) then Exit;
+  IP := Trim(StringGrid1.Cells[1, FContextRow]);
+  if IP = '' then Exit;
+
+  Port := StrToIntDef(StringGrid1.Cells[2, FContextRow], 443);
+  TQRCodeFetchThread.Create(Self, IP + ':' + IntToStr(Port));
+end;
+
+procedure TForm1.ShowServerQRCode(const QRText: string; const ImageBytes: TBytes; Success: Boolean);
+var
+  Dlg: TForm;
+  Img: TImage;
+  LblText, LblHint: TLabel;
+  BtnClose: TButton;
+  Stream: TMemoryStream;
+  Png: TPngImage;
+begin
+  if not Success then
+  begin
+    ShowMessage('Не удалось получить QR-код. Проверьте подключение к интернету.');
+    Exit;
+  end;
+
+  Dlg := TForm.Create(Self);
+  try
+    Dlg.Caption := 'QR-код сервера';
+    Dlg.BorderStyle := bsDialog;
+    Dlg.Position := poOwnerFormCenter;
+    Dlg.Font := Self.Font;
+    Dlg.ClientWidth := 340;
+    Dlg.ClientHeight := 420;
+
+    LblText := TLabel.Create(Dlg);
+    LblText.Parent := Dlg;
+    LblText.SetBounds(16, 16, 308, 16);
+    LblText.Caption := QRText;
+    LblText.Font.Style := [fsBold];
+
+    Img := TImage.Create(Dlg);
+    Img.Parent := Dlg;
+    Img.SetBounds(20, 44, 300, 300);
+    Img.Stretch := True;
+    Img.Proportional := True;
+
+    Stream := TMemoryStream.Create;
+    try
+      if Length(ImageBytes) > 0 then
+        Stream.WriteBuffer(ImageBytes[0], Length(ImageBytes));
+      Stream.Position := 0;
+      Png := TPngImage.Create;
+      try
+        Png.LoadFromStream(Stream);
+        Img.Picture.Graphic := Png;
+      finally
+        Png.Free;
+      end;
+    finally
+      Stream.Free;
+    end;
+
+    LblHint := TLabel.Create(Dlg);
+    LblHint.Parent := Dlg;
+    LblHint.SetBounds(16, 352, 308, 32);
+    LblHint.WordWrap := True;
+    LblHint.Caption := 'QR-код содержит только IP и порт сервера — для будущего ' +
+      'Android-приложения MyVPNGate. Обычным OpenVPN Connect его прочитать не получится.';
+
+    BtnClose := TButton.Create(Dlg);
+    BtnClose.Parent := Dlg;
+    BtnClose.Caption := 'Закрыть';
+    BtnClose.ModalResult := mrOk;
+    BtnClose.Default := True;
+    BtnClose.SetBounds(Dlg.ClientWidth - 96, Dlg.ClientHeight - 40, 80, 28);
+
+    Dlg.ShowModal;
+  finally
+    Dlg.Free;
   end;
 end;
 
