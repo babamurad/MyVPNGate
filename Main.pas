@@ -5,7 +5,7 @@ interface
 uses
   Winapi.Windows, Winapi.Messages, System.SysUtils, System.Variants, System.Classes, Vcl.Graphics,
   Vcl.Controls, Vcl.Forms, Vcl.Dialogs, IdBaseComponent, IdComponent,
-  IdTCPConnection, IdTCPClient, IdHTTP, Vcl.Grids, Vcl.StdCtrls, Vcl.ExtCtrls,
+  IdTCPConnection, IdTCPClient, IdUDPClient, IdGlobal, IdHTTP, Vcl.Grids, Vcl.StdCtrls, Vcl.ExtCtrls,
   Clipbrd, System.NetEncoding,
   System.Net.URLClient, System.Net.HttpClient, System.Net.HttpClientComponent,
   Vcl.ComCtrls, System.ImageList, Vcl.ImgList, Vcl.Menus,
@@ -22,12 +22,13 @@ type
     FRowIndex: Integer;
     FIP: string;
     FPort: Integer;
+    FUdp: Boolean; // True — сервер OpenVPN по UDP, проверяем UDP-пакетом, а не TCP-коннектом
     FStatus: string;
     procedure UpdateUI;
   protected
     procedure Execute; override;
   public
-    constructor Create(AForm: TForm1; ARowIndex: Integer; AIP: string; APort: Integer);
+    constructor Create(AForm: TForm1; ARowIndex: Integer; AIP: string; APort: Integer; AUdp: Boolean = False);
   end;
 
   // Фоновый поток для скачивания и парсинга серверов
@@ -228,7 +229,7 @@ type
     procedure UpdateSortHeaders;
     procedure SaveOvpnForRow(ARow: Integer);
     function LocateVpnCmd: string;
-    function CheckPortForRow(ARow: Integer): Integer;
+    procedure StartCheckForRow(ARow: Integer);
     procedure SetVpnStatusText(const S: string);
     procedure SetConnectedServerIP(const IP: string);
     function EnsureElevatedForSoftEther: Boolean;
@@ -1136,7 +1137,7 @@ end;
 
 { TTCPCheckThread }
 
-constructor TTCPCheckThread.Create(AForm: TForm1; ARowIndex: Integer; AIP: string; APort: Integer);
+constructor TTCPCheckThread.Create(AForm: TForm1; ARowIndex: Integer; AIP: string; APort: Integer; AUdp: Boolean);
 begin
   inherited Create(False);
   FreeOnTerminate := True;
@@ -1144,6 +1145,54 @@ begin
   FRowIndex := ARowIndex;
   FIP := AIP;
   FPort := APort;
+  FUdp := AUdp;
+end;
+
+// Проверка OpenVPN-сервера по UDP. «Подключиться» к UDP-порту, как к TCP,
+// нельзя, поэтому отправляем первый пакет рукопожатия OpenVPN —
+// P_CONTROL_HARD_RESET_CLIENT_V2 (опкод 7, key_id 0 → байт $38), случайный
+// 8-байтный ID сессии, пустой список подтверждений и packet-id 0, — и ждём
+// ответный P_CONTROL_HARD_RESET_SERVER_V2 (опкод 8). В конфигах VPN Gate нет
+// tls-auth, так что сервер отвечает на такой пакет без всяких ключей.
+function ProbeOpenVpnUdp(const IP: string; Port: Integer): Boolean;
+const
+  Attempts = 2;           // UDP может потерять пакет — даём второй шанс
+  ReplyTimeoutMs = 1500;
+var
+  UDP: TIdUDPClient;
+  Req, Resp: TIdBytes;
+  i, Attempt, Len: Integer;
+begin
+  Result := False;
+  UDP := TIdUDPClient.Create(nil);
+  try
+    UDP.Host := IP;
+    UDP.Port := Port;
+
+    SetLength(Req, 14);
+    Req[0] := $38;
+    for i := 1 to 8 do
+      Req[i] := Byte(Random(256)); // ID сессии — любой, лишь бы не нули
+    for i := 9 to 13 do
+      Req[i] := 0;
+
+    SetLength(Resp, 2048);
+    for Attempt := 1 to Attempts do
+    begin
+      try
+        UDP.SendBuffer(Req);
+        Len := UDP.ReceiveBuffer(Resp, ReplyTimeoutMs);
+        if (Len > 0) and ((Resp[0] shr 3) = 8) then
+          Exit(True);
+      except
+        // ICMP "port unreachable" Windows превращает в ошибку сокета
+        // (WSAECONNRESET) — это однозначное «нет», повторять незачем
+        Exit(False);
+      end;
+    end;
+  finally
+    UDP.Free;
+  end;
 end;
 
 procedure TTCPCheckThread.UpdateUI;
@@ -1168,6 +1217,16 @@ procedure TTCPCheckThread.Execute;
 var
   TCPClient: TIdTCPClient;
 begin
+  if FUdp then
+  begin
+    if ProbeOpenVpnUdp(FIP, FPort) then
+      FStatus := 'Работает!'
+    else
+      FStatus := 'Недоступен';
+    Synchronize(UpdateUI);
+    Exit;
+  end;
+
   TCPClient := TIdTCPClient.Create(nil);
   try
     TCPClient.Host := FIP;
@@ -1562,17 +1621,17 @@ begin
   ShowAutoUpdateSettingsDialog;
 end;
 
-// Порт для проверки доступности сервера (TTCPCheckThread — это TCP-коннект).
-// У серверов с протоколом UDP в колонке «Порт» стоит UDP-порт OpenVPN, и
-// TCP-коннект на него не проходит никогда — такие серверы всегда получали
-// «Недоступен» и прятались фильтром «Оставить только рабочие», даже когда
-// были живы. Для них проверяем TCP 443 — тот же порт, по которому к ним
-// подключается SoftEther (см. MenuConnectSoftEtherClick).
-function TForm1.CheckPortForRow(ARow: Integer): Integer;
+// Запускает проверку доступности сервера из строки таблицы. У серверов с
+// протоколом UDP в колонке «Порт» стоит UDP-порт OpenVPN: TCP-коннект на
+// него не проходит никогда, и раньше такие серверы всегда получали
+// «Недоступен» и прятались фильтром «Оставить только рабочие». Их
+// проверяем UDP-пакетом OpenVPN (см. ProbeOpenVpnUdp).
+procedure TForm1.StartCheckForRow(ARow: Integer);
 begin
-  Result := StrToIntDef(StringGrid1.Cells[2, ARow], 443);
-  if SameText(Trim(StringGrid1.Cells[6, ARow]), 'UDP') then
-    Result := 443;
+  StringGrid1.Cells[7, ARow] := 'Проверка...';
+  TTCPCheckThread.Create(Self, ARow, StringGrid1.Cells[1, ARow],
+    StrToIntDef(StringGrid1.Cells[2, ARow], 443),
+    SameText(Trim(StringGrid1.Cells[6, ARow]), 'UDP'));
 end;
 
 procedure TForm1.Button2Click(Sender: TObject);
@@ -1582,10 +1641,7 @@ begin
   for i := 1 to StringGrid1.RowCount - 1 do
   begin
     if Trim(StringGrid1.Cells[1, i]) <> '' then
-    begin
-      StringGrid1.Cells[7, i] := 'Проверка...';
-      TTCPCheckThread.Create(Self, i, StringGrid1.Cells[1, i], CheckPortForRow(i));
-    end;
+      StartCheckForRow(i);
   end;
 end;
 
@@ -2152,11 +2208,7 @@ procedure TForm1.MenuRecheckServerClick(Sender: TObject);
 begin
   if (FContextRow > 0) and (FContextRow < StringGrid1.RowCount) and
      (Trim(StringGrid1.Cells[1, FContextRow]) <> '') then
-  begin
-    StringGrid1.Cells[7, FContextRow] := 'Проверка...';
-    TTCPCheckThread.Create(Self, FContextRow, StringGrid1.Cells[1, FContextRow],
-      CheckPortForRow(FContextRow));
-  end;
+    StartCheckForRow(FContextRow);
 end;
 
 procedure TForm1.MenuSaveOvpnClick(Sender: TObject);
