@@ -228,6 +228,7 @@ type
     procedure UpdateSortHeaders;
     procedure SaveOvpnForRow(ARow: Integer);
     function LocateVpnCmd: string;
+    function CheckPortForRow(ARow: Integer): Integer;
     procedure SetVpnStatusText(const S: string);
     procedure SetConnectedServerIP(const IP: string);
     function EnsureElevatedForSoftEther: Boolean;
@@ -1561,6 +1562,19 @@ begin
   ShowAutoUpdateSettingsDialog;
 end;
 
+// Порт для проверки доступности сервера (TTCPCheckThread — это TCP-коннект).
+// У серверов с протоколом UDP в колонке «Порт» стоит UDP-порт OpenVPN, и
+// TCP-коннект на него не проходит никогда — такие серверы всегда получали
+// «Недоступен» и прятались фильтром «Оставить только рабочие», даже когда
+// были живы. Для них проверяем TCP 443 — тот же порт, по которому к ним
+// подключается SoftEther (см. MenuConnectSoftEtherClick).
+function TForm1.CheckPortForRow(ARow: Integer): Integer;
+begin
+  Result := StrToIntDef(StringGrid1.Cells[2, ARow], 443);
+  if SameText(Trim(StringGrid1.Cells[6, ARow]), 'UDP') then
+    Result := 443;
+end;
+
 procedure TForm1.Button2Click(Sender: TObject);
 var
   i: Integer;
@@ -1570,7 +1584,7 @@ begin
     if Trim(StringGrid1.Cells[1, i]) <> '' then
     begin
       StringGrid1.Cells[7, i] := 'Проверка...';
-      TTCPCheckThread.Create(Self, i, StringGrid1.Cells[1, i], StrToIntDef(StringGrid1.Cells[2, i], 443));
+      TTCPCheckThread.Create(Self, i, StringGrid1.Cells[1, i], CheckPortForRow(i));
     end;
   end;
 end;
@@ -2141,7 +2155,7 @@ begin
   begin
     StringGrid1.Cells[7, FContextRow] := 'Проверка...';
     TTCPCheckThread.Create(Self, FContextRow, StringGrid1.Cells[1, FContextRow],
-      StrToIntDef(StringGrid1.Cells[2, FContextRow], 443));
+      CheckPortForRow(FContextRow));
   end;
 end;
 
