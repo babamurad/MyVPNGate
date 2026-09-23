@@ -280,6 +280,10 @@ const
   SoftEtherAccountName = 'MyVPNGateQuick'; // одно и то же имя переиспользуется под любой сервер
   SoftEtherNicName = 'VPN'; // имя виртуального адаптера по умолчанию у SoftEther VPN Client Manager
   VpnCmdPathCacheFile = 'vpncmd_path.txt';
+  // Если рядом с программой лежит файл с этим именем — считаем его
+  // официальным установщиком SoftEther VPN Client и предлагаем запустить
+  // его сам, вместо того чтобы отправлять пользователя искать его в сети
+  SoftEtherInstallerFile = 'SoftEtherClientSetup.exe';
   ServersUpdatedFile = 'servers_updated.txt'; // хранит дату/время последнего успешного обновления списка серверов
   AutoUpdateSettingsFile = 'autoupdate.ini';  // хранит настройки автообновления (включено/выключено, интервал)
   DefaultAutoUpdateMinutes = 30;
@@ -1424,7 +1428,9 @@ begin
 
     'Подключение через SoftEther требует отдельно установленного SoftEther ' +
     'VPN Client — сама программа VPN-туннель не реализует, только ' +
-    'автоматизирует подключение к уже работающему клиенту.',
+    'автоматизирует подключение к уже работающему клиенту. Если он не ' +
+    'найден, а рядом с программой лежит файл ' + SoftEtherInstallerFile + ' — ' +
+    'будет предложено сразу запустить его.',
     mtInformation, [mbOK], 0);
 end;
 
@@ -1787,7 +1793,7 @@ const
     'C:\Program Files (x86)\SoftEther VPN Client\vpncmd.exe'
   );
 var
-  CacheFile, Candidate: string;
+  CacheFile, Candidate, InstallerPath: string;
   SL: TStringList;
   i: Integer;
 begin
@@ -1813,6 +1819,31 @@ begin
   for i := 0 to High(CommonPaths) do
     if FileExists(CommonPaths[i]) then
       Exit(CommonPaths[i]);
+
+  // SoftEther VPN Client не найден. Если рядом с программой лежит его
+  // установщик (SoftEtherInstallerFile) — предлагаем запустить именно его,
+  // вместо того чтобы сразу отправлять пользователя искать vpncmd.exe
+  // вручную. Сам установщик — окно другого приложения, ждать его завершения
+  // тут не пытаемся: пользователь ставит SoftEther в своём темпе и заново
+  // нажимает на нужное действие после установки.
+  InstallerPath := ExtractFilePath(ParamStr(0)) + SoftEtherInstallerFile;
+  if FileExists(InstallerPath) then
+  begin
+    if MessageDlg('SoftEther VPN Client не найден — похоже, он ещё не установлен. ' +
+         'Рядом с программой есть его установщик. Запустить его сейчас?' + sLineBreak + sLineBreak +
+         'После установки нажмите на это же действие ещё раз.',
+         mtConfirmation, [mbYes, mbNo], 0) = mrYes then
+    begin
+      try
+        ShellExecute(0, nil, PChar(InstallerPath), nil,
+          PChar(ExtractFilePath(InstallerPath)), SW_SHOWNORMAL);
+      except
+        on E: Exception do
+          ShowMessage('Не удалось запустить установщик: ' + E.Message);
+      end;
+      Exit(''); // vpncmd.exe появится только после того, как установка реально завершится
+    end;
+  end;
 
   if MessageDlg('Не найден vpncmd.exe (утилита SoftEther VPN Client). Указать путь к нему вручную?',
        mtConfirmation, [mbYes, mbNo], 0) = mrYes then
