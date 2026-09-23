@@ -63,6 +63,7 @@ type
     FConnectedIP: string; // IP сервера, который нужно (пере)отметить подключённым в таблице ('' — снять отметку)
     procedure SyncStatus;
     procedure SyncConnectedIP;
+    procedure SyncConnectFailed;
   protected
     procedure Execute; override;
   public
@@ -191,6 +192,8 @@ type
     FConnectionGeneration: Integer;             // Увеличивается при каждом (пере)подключении/отключении — отсекает устаревшие результаты фоновых проверок
     FConsecutiveDrops: Integer;                 // Сколько подряд проверок связи подряд не прошли
     FReconnecting: Boolean;                     // True между обнаружением обрыва и стартом нового TSoftEtherThread — не даёт запустить переподключение дважды подряд
+    FCascadeAttemptIPs: TStringList;            // IP серверов, уже испробованных в текущем каскаде подключения (nil — каскад не идёт)
+    FCascadeRemaining: Integer;                 // Сколько ещё серверов можно попробовать в текущем каскаде
     procedure StartServerListUpdate(AIsAuto: Boolean);
     procedure LoadAutoUpdateSettings;
     procedure SaveAutoUpdateSettings;
@@ -214,10 +217,14 @@ type
     procedure SaveFavorites;
     function IsFavorite(const IP: string): Boolean;
     procedure ToggleFavorite(const IP: string);
-    function FindBestServerRow(out IP: string; out Port: Integer; const ExcludeIP: string = ''): Boolean;
+    function FindBestServerRow(out IP: string; out Port: Integer; const ExcludeIP: string = '';
+      ExcludeIPs: TStrings = nil): Boolean;
     procedure ConnectToServer(const IP: string; APort: Integer);
     procedure ReconnectToNextBestServer(const ExcludeIP: string);
     procedure HandleMonitorResult(SessionAlive: Boolean; const PingText: string);
+    procedure StartCascadeConnect(const InitialExcludeIP: string);
+    procedure TryNextCascadeCandidate;
+    procedure HandleConnectAttemptFailed(const FailedIP: string);
   public
     { Public declarations }
   end;
@@ -624,6 +631,12 @@ begin
   FForm.SetConnectedServerIP(FConnectedIP);
 end;
 
+procedure TSoftEtherThread.SyncConnectFailed;
+begin
+  FForm.SetVpnStatusText(FStatusText);
+  FForm.HandleConnectAttemptFailed(FServerIP);
+end;
+
 procedure TSoftEtherThread.Execute;
 var
   Output, LowerOutput, ConfigPath: string;
@@ -726,13 +739,21 @@ begin
     FStatusText := 'VPN: подключено к ' + FServerIP;
     FConnectedIP := FServerIP;
     Synchronize(SyncConnectedIP);
+    Synchronize(SyncStatus);
   end
-  else if Failed then
-    FStatusText := 'VPN: ошибка подключения к ' + FServerIP
   else
-    FStatusText := 'VPN: не удалось подключиться за отведённое время';
-
-  Synchronize(SyncStatus);
+  begin
+    if Failed then
+      FStatusText := 'VPN: ошибка подключения к ' + FServerIP
+    else
+      FStatusText := 'VPN: не удалось подключиться за отведённое время';
+    // Сообщаем форме именно о НЕУДАЧЕ этой попытки (в отличие от текста
+    // статуса, который просто отображается) — если подключение шло через
+    // каскад (см. TForm1.StartCascadeConnect), форма сама попробует
+    // следующий по списку сервер вместо того, чтобы просто сдаться на
+    // первом же "протухшем" узле.
+    Synchronize(SyncConnectFailed);
+  end;
 end;
 
 { TConnectionMonitorThread }
@@ -952,6 +973,8 @@ begin
   FConnectedServerIP := '';
   FConnectionGeneration := 0;
   FConsecutiveDrops := 0;
+  FCascadeAttemptIPs := nil;
+  FCascadeRemaining := 0;
 
   LoadFavorites;
 
@@ -1046,6 +1069,7 @@ begin
   FOvpnConfigs.Free;
   FMasterList.Free;
   FFavorites.Free;
+  FCascadeAttemptIPs.Free;
 end;
 
 // Application.OnMinimize срабатывает при сворачивании главного окна —
@@ -1553,7 +1577,10 @@ begin
       'списка и сортировке (сверяется по IP).' + sLineBreak +
     '  12. Пункт «Быстрое подключение» в меню значка в трее сам выбирает ' +
       'сервер с лучшей заявленной скоростью среди проверенных рабочих и ' +
-      'подключается к нему — без захода в окно программы.' + sLineBreak +
+      'подключается к нему — без захода в окно программы. Если этот сервер ' +
+      'на деле не подключается (бывает — публичные узлы VPN Gate ' +
+      'непостоянны), программа сама пробует следующий по списку, и так до ' +
+      '4 серверов подряд, прежде чем сообщить о неудаче.' + sLineBreak +
     '  13. Пока подключение активно, статус-бар (и подсказка значка в трее) ' +
       'каждые 10 секунд показывает пинг до сервера и следит, жива ли сама ' +
       'VPN-сессия; в «Настройках» можно включить автоматическое ' +
@@ -1922,6 +1949,15 @@ begin
   FReconnecting := False;
   PingTimer.Enabled := (IP <> '');
 
+  // Реальное подключение состоялось — если оно шло через каскад перебора
+  // серверов, он своё дело сделал и больше не нужен. Проверяем именно
+  // IP <> '', а не полагаемся на сам факт вызова: TSoftEtherThread вызывает
+  // этот же метод с '' и в начале КАЖДОЙ попытки (чтобы снять старую
+  // отметку) — если чистить каскад и на это тоже, он оборвётся на первом
+  // же шаге.
+  if IP <> '' then
+    FreeAndNil(FCascadeAttemptIPs);
+
   StringGrid1.Invalidate;
 end;
 
@@ -2035,6 +2071,11 @@ begin
   // Фиксированный 443 подходит не всегда — подтверждено на практике: с ним
   // подключение к части серверов не проходит, а с их собственным портом — да.
   Port := StrToIntDef(StringGrid1.Cells[2, FContextRow], 443);
+
+  // Явный ручной выбор конкретного сервера — если вдруг ещё шёл каскад
+  // перебора (например, от предыдущего «Быстрого подключения»), он тут
+  // неуместен: пользователь сам выбрал сервер, подменять его не нужно.
+  FreeAndNil(FCascadeAttemptIPs);
   ConnectToServer(IP, Port);
 end;
 
@@ -2060,7 +2101,8 @@ end;
 // заявленной скоростью (пинг — как второй критерий при равной скорости).
 // ExcludeIP позволяет исключить конкретный сервер — например, тот, с
 // которым только что оборвалась связь, при автопереподключении.
-function TForm1.FindBestServerRow(out IP: string; out Port: Integer; const ExcludeIP: string): Boolean;
+function TForm1.FindBestServerRow(out IP: string; out Port: Integer; const ExcludeIP: string;
+  ExcludeIPs: TStrings): Boolean;
 var
   i: Integer;
   Cols: TArray<string>;
@@ -2081,6 +2123,7 @@ begin
     if Length(Cols) < 7 then Continue;
     if Cols[6] <> 'Работает!' then Continue;
     if (ExcludeIP <> '') and (Cols[0] = ExcludeIP) then Continue;
+    if Assigned(ExcludeIPs) and (ExcludeIPs.IndexOf(Cols[0]) >= 0) then Continue;
 
     Speed := StrToFloatDef(Cols[4], 0);
     Ping := StrToIntDef(Cols[3], MaxInt);
@@ -2107,7 +2150,7 @@ begin
     ShowMessage('Нет ни одного проверенного рабочего сервера. Сначала нажмите «Проверить серверы».');
     Exit;
   end;
-  ConnectToServer(IP, Port);
+  StartCascadeConnect('');
 end;
 
 procedure TForm1.MenuTrayCheckUpdateClick(Sender: TObject);
@@ -2118,17 +2161,62 @@ end;
 // Подбирает следующий лучший сервер (кроме того, с которым только что
 // оборвалась связь) и переподключается к нему
 procedure TForm1.ReconnectToNextBestServer(const ExcludeIP: string);
+begin
+  StartCascadeConnect(ExcludeIP);
+end;
+
+// Запускает перебор рабочих серверов: пробует лучший по заявленной скорости,
+// и если он не подключается (см. HandleConnectAttemptFailed) — следующий, и
+// так до MaxCascadeAttempts раз. Используется «Быстрым подключением» и
+// автопереподключением при обрыве; обычное подключение к конкретному
+// серверу из контекстного меню каскад не запускает — там сервер выбирает
+// сам пользователь, и подменять его молча было бы неожиданно.
+procedure TForm1.StartCascadeConnect(const InitialExcludeIP: string);
+const
+  MaxCascadeAttempts = 4; // сколько разных серверов подряд пробуем, прежде чем сдаться
+begin
+  FreeAndNil(FCascadeAttemptIPs);
+  FCascadeAttemptIPs := TStringList.Create;
+  if InitialExcludeIP <> '' then
+    FCascadeAttemptIPs.Add(InitialExcludeIP);
+  FCascadeRemaining := MaxCascadeAttempts;
+  TryNextCascadeCandidate;
+end;
+
+procedure TForm1.TryNextCascadeCandidate;
 var
   IP: string;
   Port: Integer;
 begin
-  if not FindBestServerRow(IP, Port, ExcludeIP) then
+  if not Assigned(FCascadeAttemptIPs) then Exit;
+
+  if FCascadeRemaining <= 0 then
   begin
-    SetVpnStatusText('VPN: связь потеряна, замену для ' + ExcludeIP + ' не нашли');
-    SetConnectedServerIP('');
+    SetVpnStatusText('VPN: не удалось подключиться ни к одному из проверенных серверов');
+    FreeAndNil(FCascadeAttemptIPs);
     Exit;
   end;
+
+  if not FindBestServerRow(IP, Port, '', FCascadeAttemptIPs) then
+  begin
+    SetVpnStatusText('VPN: больше нет проверенных рабочих серверов для подключения');
+    FreeAndNil(FCascadeAttemptIPs);
+    Exit;
+  end;
+
+  FCascadeAttemptIPs.Add(IP);
+  Dec(FCascadeRemaining);
   ConnectToServer(IP, Port);
+end;
+
+// Вызывается, когда ИМЕННО ЭТА попытка подключения провалилась (см.
+// TSoftEtherThread.SyncConnectFailed) — если она была частью каскада,
+// пробуем следующий сервер; если нет (ручной выбор из контекстного меню) —
+// ничего не делаем, пользователь уже увидел текст ошибки в статус-баре.
+procedure TForm1.HandleConnectAttemptFailed(const FailedIP: string);
+begin
+  if not Assigned(FCascadeAttemptIPs) then Exit;
+  TryNextCascadeCandidate;
 end;
 
 // Результат фоновой проверки активного подключения (см.
@@ -2183,6 +2271,8 @@ begin
   if FVpnCmdPath = '' then
     FVpnCmdPath := LocateVpnCmd;
   if FVpnCmdPath = '' then Exit;
+
+  FreeAndNil(FCascadeAttemptIPs); // ручное отключение останавливает и каскад перебора, если он шёл
   TSoftEtherThread.Create(Self, seaDisconnect, '', 0);
 end;
 
