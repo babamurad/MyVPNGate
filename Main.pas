@@ -10,7 +10,7 @@ uses
   System.Net.URLClient, System.Net.HttpClient, System.Net.HttpClientComponent,
   Vcl.ComCtrls, System.ImageList, Vcl.ImgList, Vcl.Menus,
   System.Generics.Collections, System.IOUtils, Winapi.ShellAPI, System.IniFiles,
-  System.Win.Registry;
+  System.Win.Registry, System.JSON;
 
 type
   TForm1 = class; // Предварительное объявление
@@ -89,6 +89,25 @@ type
     constructor Create(AForm: TForm1; const ATargetIP: string; AGeneration: Integer);
   end;
 
+  // Проверяет последний релиз на GitHub (см. GitHubRepoOwner/GitHubRepoName)
+  // и сравнивает его тег версии с AppVersion. Ничего не скачивает и не
+  // подменяет сам исполняемый файл — только показывает ссылку на страницу
+  // релиза, если версия там новее (самозамена запущенного .exe — отдельная,
+  // куда более рискованная задача, тут сознательно не реализована).
+  TAppUpdateCheckThread = class(TThread)
+  private
+    FForm: TForm1;
+    FSilent: Boolean; // True — тихая проверка при запуске: ничего не сообщаем, если обновлений нет или сеть недоступна
+    FSuccess: Boolean;
+    FLatestVersion: string;
+    FReleaseUrl: string;
+    procedure SyncResult;
+  protected
+    procedure Execute; override;
+  public
+    constructor Create(AForm: TForm1; ASilent: Boolean);
+  end;
+
   TForm1 = class(TForm)
     Panel1: TPanel;
     Button1: TButton;
@@ -121,6 +140,7 @@ type
     MenuToggleFavorite: TMenuItem;
     PingTimer: TTimer;
     MenuTrayQuickConnect: TMenuItem;
+    MenuTrayCheckUpdate: TMenuItem;
     procedure Button1Click(Sender: TObject);
     procedure Button2Click(Sender: TObject);
     procedure Button3Click(Sender: TObject);
@@ -152,6 +172,7 @@ type
     procedure MenuToggleFavoriteClick(Sender: TObject);
     procedure PingTimerTimer(Sender: TObject);
     procedure MenuTrayQuickConnectClick(Sender: TObject);
+    procedure MenuTrayCheckUpdateClick(Sender: TObject);
   private
     FOvpnConfigs: TDictionary<string, string>; // IP -> декодированный .ovpn (заполняется при обновлении списка)
     FContextRow: Integer;                      // Строка, по которой кликнули правой кнопкой (для контекстного меню)
@@ -213,6 +234,14 @@ const
   // 1 - IP, 2 - Порт, 3 - Страна, 4 - Пинг (мс), 5 - Скорость (Мбит/с)
   ColHeaderBase: array[1..5] of string = ('IP', 'Порт', 'Страна', 'Пинг, мс', 'Скорость, Мбит/с');
 
+  // Версия программы — при выпуске новой сборки менять вручную здесь и
+  // одновременно создавать на GitHub релиз с тегом вида "v1.2.0" (см.
+  // TAppUpdateCheckThread): у выложенного .exe и у тега должна быть одна
+  // и та же версия, иначе проверка обновлений будет врать.
+  AppVersion = '1.0.0';
+  GitHubRepoOwner = 'babamurad';
+  GitHubRepoName = 'MyVPNGate';
+
 // Сравнение IP-адресов по числовым октетам, а не как обычных строк
 // (иначе, например, "10.0.0.1" оказался бы "меньше" "9.0.0.1")
 function CompareIP(const A, B: string): Integer;
@@ -224,6 +253,40 @@ begin
   PartsB := B.Split(['.']);
   Result := 0;
   for i := 0 to 3 do
+  begin
+    if i < Length(PartsA) then VA := StrToIntDef(PartsA[i], 0) else VA := 0;
+    if i < Length(PartsB) then VB := StrToIntDef(PartsB[i], 0) else VB := 0;
+    if VA <> VB then
+    begin
+      Result := VA - VB;
+      Exit;
+    end;
+  end;
+end;
+
+// Сравнение версий вида "1.2.0" (тег релиза GitHub может начинаться с "v" —
+// её отбрасываем). Результат > 0, если A новее B; < 0 — если A старее.
+function CompareVersions(const A, B: string): Integer;
+var
+  CleanA, CleanB: string;
+  PartsA, PartsB: TArray<string>;
+  i, VA, VB, PartCount: Integer;
+begin
+  CleanA := A;
+  if (CleanA <> '') and CharInSet(CleanA[1], ['v', 'V']) then
+    Delete(CleanA, 1, 1);
+  CleanB := B;
+  if (CleanB <> '') and CharInSet(CleanB[1], ['v', 'V']) then
+    Delete(CleanB, 1, 1);
+
+  PartsA := CleanA.Split(['.']);
+  PartsB := CleanB.Split(['.']);
+  Result := 0;
+
+  PartCount := Length(PartsA);
+  if Length(PartsB) > PartCount then PartCount := Length(PartsB);
+
+  for i := 0 to PartCount - 1 do
   begin
     if i < Length(PartsA) then VA := StrToIntDef(PartsA[i], 0) else VA := 0;
     if i < Length(PartsB) then VB := StrToIntDef(PartsB[i], 0) else VB := 0;
@@ -719,6 +782,76 @@ begin
   Synchronize(SyncResult);
 end;
 
+{ TAppUpdateCheckThread }
+
+constructor TAppUpdateCheckThread.Create(AForm: TForm1; ASilent: Boolean);
+begin
+  inherited Create(False);
+  FreeOnTerminate := True;
+  FForm := AForm;
+  FSilent := ASilent;
+end;
+
+procedure TAppUpdateCheckThread.SyncResult;
+begin
+  if not FSuccess then
+  begin
+    if not FSilent then
+      ShowMessage('Не удалось проверить обновления программы. Проверьте подключение к интернету.');
+    Exit;
+  end;
+
+  if CompareVersions(FLatestVersion, AppVersion) > 0 then
+  begin
+    if MessageDlg('Доступна новая версия программы: ' + FLatestVersion +
+         ' (у вас установлена ' + AppVersion + ').' + sLineBreak + sLineBreak +
+         'Открыть страницу загрузки на GitHub?',
+         mtInformation, [mbYes, mbNo], 0) = mrYes then
+      ShellExecute(0, 'open', PChar(FReleaseUrl), nil, nil, SW_SHOWNORMAL);
+  end
+  else if not FSilent then
+    ShowMessage('У вас установлена последняя версия программы (' + AppVersion + ').');
+end;
+
+procedure TAppUpdateCheckThread.Execute;
+var
+  Client: TNetHTTPClient;
+  Response: string;
+  JSONValue: TJSONValue;
+begin
+  FSuccess := False;
+  Client := TNetHTTPClient.Create(nil);
+  try
+    try
+      // GitHub API требует непустой User-Agent, иначе отвечает 403
+      Client.UserAgent := 'MyVPNGate-UpdateCheck';
+      Response := Client.Get('https://api.github.com/repos/' + GitHubRepoOwner +
+        '/' + GitHubRepoName + '/releases/latest').ContentAsString();
+
+      JSONValue := TJSONObject.ParseJSONValue(Response);
+      if Assigned(JSONValue) then
+      try
+        if JSONValue is TJSONObject then
+        begin
+          FLatestVersion := TJSONObject(JSONValue).GetValue<string>('tag_name', '');
+          FReleaseUrl := TJSONObject(JSONValue).GetValue<string>('html_url', '');
+          FSuccess := (FLatestVersion <> '') and (FReleaseUrl <> '');
+        end;
+      finally
+        JSONValue.Free;
+      end;
+    except
+      // Нет сети, репозиторий недоступен, релизов ещё нет и т.п. — тихо
+      // считаем, что проверить не удалось, ничего не роняем
+      FSuccess := False;
+    end;
+  finally
+    Client.Free;
+  end;
+
+  Synchronize(SyncResult);
+end;
+
 { TTCPCheckThread }
 
 constructor TTCPCheckThread.Create(AForm: TForm1; ARowIndex: Integer; AIP: string; APort: Integer);
@@ -901,6 +1034,11 @@ begin
     Hide;
     TrayIcon1.Visible := True;
   end;
+
+  // Тихая проверка обновлений самой программы — ничего не покажет, если
+  // обновлений нет или сеть недоступна (см. TAppUpdateCheckThread); вручную
+  // её же можно вызвать пунктом «Проверить обновления программы» в трее
+  TAppUpdateCheckThread.Create(Self, True);
 end;
 
 procedure TForm1.FormDestroy(Sender: TObject);
@@ -1419,7 +1557,12 @@ begin
     '  13. Пока подключение активно, статус-бар (и подсказка значка в трее) ' +
       'каждые 10 секунд показывает пинг до сервера и следит, жива ли сама ' +
       'VPN-сессия; в «Настройках» можно включить автоматическое ' +
-      'переподключение к другому серверу при обрыве связи.' + sLineBreak + sLineBreak +
+      'переподключение к другому серверу при обрыве связи.' + sLineBreak +
+    '  14. Программа сама проверяет на GitHub, нет ли новой версии (тихо, ' +
+      'при запуске), и предложит открыть страницу загрузки, если она есть. ' +
+      'Проверить вручную можно пунктом «Проверить обновления программы» в ' +
+      'меню значка в трее. Сама себя программа не обновляет — только ' +
+      'сообщает о новой версии.' + sLineBreak + sLineBreak +
 
     'Статус «Работает!» означает только то, что TCP-порт сервера принял ' +
     'соединение — это не гарантирует рабочий VPN-туннель. Если конкретный ' +
@@ -1965,6 +2108,11 @@ begin
     Exit;
   end;
   ConnectToServer(IP, Port);
+end;
+
+procedure TForm1.MenuTrayCheckUpdateClick(Sender: TObject);
+begin
+  TAppUpdateCheckThread.Create(Self, False);
 end;
 
 // Подбирает следующий лучший сервер (кроме того, с которым только что
