@@ -61,6 +61,7 @@ type
     FServerPort: Integer;
     FStatusText: string;
     FConnectedIP: string; // IP сервера, который нужно (пере)отметить подключённым в таблице ('' — снять отметку)
+    function RunCmd(const Args: string; out Output: string; LogOutput: Boolean = True): DWORD;
     procedure SyncStatus;
     procedure SyncConnectedIP;
     procedure SyncConnectFailed;
@@ -371,6 +372,7 @@ const
   SoftEtherAccountName = 'MyVPNGateQuick'; // одно и то же имя переиспользуется под любой сервер
   SoftEtherNicName = 'VPN'; // имя виртуального адаптера по умолчанию у SoftEther VPN Client Manager
   VpnCmdPathCacheFile = 'vpncmd_path.txt';
+  SoftEtherLogFile = 'softether_log.txt'; // журнал команд vpncmd при подключении (см. AppendSoftEtherLog)
   // Если рядом с программой лежит файл с этим именем — считаем его
   // официальным установщиком SoftEther VPN Client и предлагаем запустить
   // его сам, вместо того чтобы отправлять пользователя искать его в сети
@@ -462,15 +464,19 @@ end;
 // состоянием VPN-сессии. Если её не отрезать, любой текстовый поиск слова
 // "connected" (например, в AccountStatusGet) ложно сработает на эту шапку
 // при любом вызове, вне зависимости от реального результата.
-function RunVpnCmd(const VpnCmdExe, Args: string; out Output: string): Boolean;
+//
+// ExitCode — код завершения самого vpncmd.exe: 0 при успехе команды, иначе
+// код ошибки SoftEther. В отличие от текста ответа, он не зависит от языка
+// интерфейса SoftEther, поэтому по нему надёжнее понять, что команда не
+// выполнилась.
+function RunVpnCmdEx(const VpnCmdExe, Args: string; out Output: string; out ExitCode: DWORD): Boolean;
 var
   RawOutput: string;
   PromptPos: Integer;
-  DummyExitCode: DWORD; // код завершения самого vpncmd.exe тут не нужен — важен только текст ответа
 const
   PromptMarker = 'VPN Client>';
 begin
-  Result := RunProcessCapture('"' + VpnCmdExe + '" localhost /CLIENT /CMD ' + Args, 15000, RawOutput, DummyExitCode);
+  Result := RunProcessCapture('"' + VpnCmdExe + '" localhost /CLIENT /CMD ' + Args, 15000, RawOutput, ExitCode);
 
   // "VPN Client>" — это приглашение, за которым vpncmd эхом печатает саму
   // команду, а после перевода строки уже идёт её реальный результат.
@@ -485,6 +491,83 @@ begin
   end
   else
     Output := RawOutput;
+end;
+
+function RunVpnCmd(const VpnCmdExe, Args: string; out Output: string): Boolean;
+var
+  DummyExitCode: DWORD;
+begin
+  Result := RunVpnCmdEx(VpnCmdExe, Args, Output, DummyExitCode);
+end;
+
+// Журнал всех команд vpncmd при подключении и их ответов — рядом с
+// программой, в softether_log.txt. Без него по одному статусу «не удалось
+// подключиться» невозможно понять, на каком шаге и почему SoftEther отказал.
+procedure AppendSoftEtherLog(const Text: string);
+const
+  MaxLogSize = 1024 * 1024; // чтобы журнал не рос бесконечно
+var
+  LogPath: string;
+begin
+  LogPath := ExtractFilePath(ParamStr(0)) + SoftEtherLogFile;
+  try
+    if FileExists(LogPath) and (TFile.GetSize(LogPath) > MaxLogSize) then
+      TFile.Delete(LogPath);
+    TFile.AppendAllText(LogPath,
+      FormatDateTime('yyyy-mm-dd hh:nn:ss', Now) + '  ' + Text + sLineBreak, TEncoding.UTF8);
+  except
+    // журнал — только для диагностики, его сбой не должен мешать подключению
+  end;
+end;
+
+// Сжимает ответ vpncmd в одну строку для статус-бара — обычно это
+// "Error occurred. (Error code: N)" и строка с описанием ошибки
+function CompactVpnCmdOutput(const Output: string): string;
+const
+  MaxLen = 200;
+var
+  Lines: TStringList;
+  i: Integer;
+  S: string;
+begin
+  Result := '';
+  Lines := TStringList.Create;
+  try
+    Lines.Text := Output;
+    for i := 0 to Lines.Count - 1 do
+    begin
+      S := Trim(Lines[i]);
+      if (S = '') or (Pos('The command completed', S) = 1) then Continue;
+      if Result <> '' then Result := Result + ' ';
+      Result := Result + S;
+    end;
+  finally
+    Lines.Free;
+  end;
+  if Length(Result) > MaxLen then
+    Result := Copy(Result, 1, MaxLen) + '...';
+end;
+
+// Значение строки "Session Status |..." из ответа AccountStatusGet (например,
+// "Retrying" или "Connecting") — '' если такой строки нет
+function ExtractSessionStatus(const Output: string): string;
+var
+  Lines: TStringList;
+  i, BarPos: Integer;
+begin
+  Result := '';
+  Lines := TStringList.Create;
+  try
+    Lines.Text := Output;
+    for i := 0 to Lines.Count - 1 do
+    begin
+      BarPos := Pos('|', Lines[i]);
+      if (BarPos > 0) and (Pos('session status', LowerCase(Copy(Lines[i], 1, BarPos))) > 0) then
+        Exit(Trim(Copy(Lines[i], BarPos + 1, MaxInt)));
+    end;
+  finally
+    Lines.Free;
+  end;
 end;
 
 // Собирает файл настроек VPN-подключения SoftEther Client в его собственном
@@ -658,10 +741,26 @@ begin
   FForm.HandleConnectAttemptFailed(FServerIP);
 end;
 
+// Выполняет команду vpncmd и пишет её вместе с ответом и кодом завершения в
+// журнал (см. AppendSoftEtherLog). LogOutput = False — только для частого
+// опроса статуса, чтобы журнал не забивался одинаковыми ответами.
+function TSoftEtherThread.RunCmd(const Args: string; out Output: string; LogOutput: Boolean): DWORD;
+begin
+  if not RunVpnCmdEx(FForm.FVpnCmdPath, Args, Output, Result) then
+  begin
+    Result := DWORD(-1);
+    AppendSoftEtherLog('> ' + Args + '  —  не удалось запустить vpncmd.exe (' + FForm.FVpnCmdPath + ')');
+    Exit;
+  end;
+  if LogOutput then
+    AppendSoftEtherLog('> ' + Args + '  [код ' + IntToStr(Integer(Result)) + ']' + sLineBreak + Trim(Output));
+end;
+
 procedure TSoftEtherThread.Execute;
 var
-  Output, LowerOutput, ConfigPath: string;
+  Output, LowerOutput, ConfigPath, LastStatusOutput, SessionStatus, ErrorText: string;
   Attempt: Integer;
+  ExitCode: DWORD;
   Connected, Failed: Boolean;
 begin
   if FForm.FVpnCmdPath = '' then
@@ -675,7 +774,8 @@ begin
   begin
     FStatusText := 'VPN: отключение...';
     Synchronize(SyncStatus);
-    RunVpnCmd(FForm.FVpnCmdPath, 'AccountDisconnect ' + SoftEtherAccountName, Output);
+    AppendSoftEtherLog('=== Отключение ===');
+    RunCmd('AccountDisconnect ' + SoftEtherAccountName, Output);
     FStatusText := 'VPN: отключено';
     Synchronize(SyncStatus);
     FConnectedIP := '';
@@ -691,14 +791,16 @@ begin
   FStatusText := 'VPN: настройка подключения к ' + FServerIP + '...';
   Synchronize(SyncStatus);
 
+  AppendSoftEtherLog('=== Подключение к ' + FServerIP + ':' + IntToStr(FServerPort) + ' ===');
+
   // На случай, если уже была активна предыдущая попытка/сессия
-  RunVpnCmd(FForm.FVpnCmdPath, 'AccountDisconnect ' + SoftEtherAccountName, Output);
+  RunCmd('AccountDisconnect ' + SoftEtherAccountName, Output);
 
   // Всегда пересоздаём аккаунт заново через импорт файла настроек (а не
   // AccountSet/AccountCreate) — так гарантированно выставляются ВСЕ нужные
   // параметры, включая NoUdpAcceleration (см. BuildSoftEtherAccountFile).
   // Сначала удаляем прежнюю версию — если её не было, ошибка безвредна.
-  RunVpnCmd(FForm.FVpnCmdPath, 'AccountDelete ' + SoftEtherAccountName, Output);
+  RunCmd('AccountDelete ' + SoftEtherAccountName, Output);
 
   ConfigPath := ExtractFilePath(ParamStr(0)) + 'softether_account.vpn';
   try
@@ -707,25 +809,48 @@ begin
     on E: Exception do
     begin
       FStatusText := 'VPN: не удалось подготовить файл настроек (' + E.Message + ')';
+      AppendSoftEtherLog(FStatusText);
       Synchronize(SyncStatus);
       Exit;
     end;
   end;
 
-  RunVpnCmd(FForm.FVpnCmdPath, 'AccountImport "' + ConfigPath + '"', Output);
+  // Раньше результаты этих команд никак не проверялись: если, например,
+  // импорт не прошёл, программа всё равно минуту ждала подключения и
+  // сообщала лишь «не удалось подключиться» — без единого намёка на причину.
+  // Теперь при ошибке любого шага сразу показываем ответ самого SoftEther.
+  // Такая ошибка — не проблема конкретного сервера (она повторится на любом),
+  // поэтому каскад перебора серверов на ней не продолжаем (SyncStatus, а не
+  // SyncConnectFailed).
+  ExitCode := RunCmd('AccountImport "' + ConfigPath + '"', Output);
+  if ExitCode <> 0 then
+  begin
+    FStatusText := 'VPN: SoftEther не принял настройки подключения: ' + CompactVpnCmdOutput(Output);
+    Synchronize(SyncStatus);
+    Exit;
+  end;
 
   // Пароль в файле — не настоящий (плейсхолдер-хэш из шаблона), выставляем
   // реальный отдельной командой, как и раньше
-  RunVpnCmd(FForm.FVpnCmdPath, Format('AccountPasswordSet %s /PASSWORD:%s /TYPE:standard',
+  RunCmd(Format('AccountPasswordSet %s /PASSWORD:%s /TYPE:standard',
     [SoftEtherAccountName, SoftEtherPassword]), Output);
 
-  RunVpnCmd(FForm.FVpnCmdPath, 'AccountConnect ' + SoftEtherAccountName, Output);
+  ExitCode := RunCmd('AccountConnect ' + SoftEtherAccountName, Output);
+  if ExitCode <> 0 then
+  begin
+    FStatusText := 'VPN: SoftEther не запустил подключение: ' + CompactVpnCmdOutput(Output);
+    Synchronize(SyncStatus);
+    Exit;
+  end;
 
   FStatusText := 'VPN: подключение к ' + FServerIP + '...';
   Synchronize(SyncStatus);
 
   Connected := False;
   Failed := False;
+  ErrorText := '';
+  SessionStatus := '';
+  LastStatusOutput := '';
   // Ждём подключения до ~60 секунд: на практике SoftEther иногда успевает
   // подключиться уже ПОСЛЕ того, как здесь заканчивалось время ожидания
   // (20с оказалось мало — Client Manager показывал Connected, а мы уже
@@ -733,8 +858,17 @@ begin
   for Attempt := 1 to 60 do
   begin
     Sleep(1000);
-    RunVpnCmd(FForm.FVpnCmdPath, 'AccountStatusGet ' + SoftEtherAccountName, Output);
+    ExitCode := RunCmd('AccountStatusGet ' + SoftEtherAccountName, Output, False);
+    // В журнал — только когда ответ изменился, а не 60 одинаковых копий
+    if Output <> LastStatusOutput then
+    begin
+      AppendSoftEtherLog('> AccountStatusGet ' + SoftEtherAccountName + '  [код ' +
+        IntToStr(Integer(ExitCode)) + ', ' + IntToStr(Attempt) + ' с]' + sLineBreak + Trim(Output));
+      LastStatusOutput := Output;
+    end;
     LowerOutput := LowerCase(Output);
+    if ExtractSessionStatus(Output) <> '' then
+      SessionStatus := ExtractSessionStatus(Output);
 
     // Реальный текст успешного статуса (проверено по живому выводу
     // AccountStatusGet) — не "Connected", а:
@@ -748,9 +882,11 @@ begin
       Break;
     end;
 
-    if (Pos('error occurred', LowerOutput) > 0) or (Pos('connection failed', LowerOutput) > 0) then
+    if (ExitCode <> 0) or (Pos('error occurred', LowerOutput) > 0) or
+       (Pos('connection failed', LowerOutput) > 0) then
     begin
       Failed := True;
+      ErrorText := CompactVpnCmdOutput(Output);
       Break;
     end;
   end;
@@ -758,6 +894,7 @@ begin
   if Connected then
   begin
     FStatusText := 'VPN: подключено к ' + FServerIP;
+    AppendSoftEtherLog(FStatusText);
     FConnectedIP := FServerIP;
     Synchronize(SyncConnectedIP);
     Synchronize(SyncStatus);
@@ -765,9 +902,17 @@ begin
   else
   begin
     if Failed then
-      FStatusText := 'VPN: ошибка подключения к ' + FServerIP
+      FStatusText := 'VPN: ошибка подключения к ' + FServerIP + ': ' + ErrorText
     else
-      FStatusText := 'VPN: не удалось подключиться за отведённое время';
+    begin
+      FStatusText := 'VPN: не удалось подключиться к ' + FServerIP + ' за отведённое время';
+      if SessionStatus <> '' then
+        FStatusText := FStatusText + ' (статус SoftEther: ' + SessionStatus + ')';
+      // Иначе SoftEther продолжит бесконечно переподключаться к этому
+      // серверу в фоне (NumRetry в настройках — без ограничения)
+      RunCmd('AccountDisconnect ' + SoftEtherAccountName, Output);
+    end;
+    AppendSoftEtherLog(FStatusText);
     // Сообщаем форме именно о НЕУДАЧЕ этой попытки (в отличие от текста
     // статуса, который просто отображается) — если подключение шло через
     // каскад (см. TForm1.StartCascadeConnect), форма сама попробует
@@ -2245,6 +2390,12 @@ begin
   // Фиксированный 443 подходит не всегда — подтверждено на практике: с ним
   // подключение к части серверов не проходит, а с их собственным портом — да.
   Port := StrToIntDef(StringGrid1.Cells[2, FContextRow], 443);
+  // ...но только если это TCP-порт: у серверов с протоколом UDP в таблице
+  // стоит UDP-порт OpenVPN, а SoftEther подключается исключительно по TCP —
+  // на UDP-порт такое подключение не пройдёт никогда. Для них берём 443,
+  // который публичные узлы VPN Gate слушают по умолчанию.
+  if SameText(Trim(StringGrid1.Cells[6, FContextRow]), 'UDP') then
+    Port := 443;
 
   // Явный ручной выбор конкретного сервера — если вдруг ещё шёл каскад
   // перебора (например, от предыдущего «Быстрого подключения»), он тут
@@ -2309,6 +2460,8 @@ begin
       BestPing := Ping;
       IP := Cols[0];
       Port := StrToIntDef(Cols[1], 443);
+      if SameText(Cols[5], 'UDP') then
+        Port := 443; // SoftEther работает только по TCP (см. MenuConnectSoftEtherClick)
       Result := True;
     end;
   end;
