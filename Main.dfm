@@ -1301,6 +1301,10 @@ object Form1: TForm1
       Default = True
       OnClick = MenuTrayShowClick
     end
+    object MenuTrayCheckUpdate: TMenuItem
+      Caption = #1055#1088#1086#1074#1077#1088#1080#1090#1100' '#1086#1073#1085#1086#1074#1083#1077#1085#1080#1103' '#1087#1088#1086#1075#1088#1072#1084#1084#1099
+      OnClick = MenuTrayCheckUpdateClick
+    end
     object MenuTrayExit: TMenuItem
       Caption = #1042#1099#1093#1086#1076
       OnClick = MenuTrayExitClick
