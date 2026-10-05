@@ -1274,8 +1274,12 @@ object Form1: TForm1
       Caption = #1055#1086#1076#1082#1083#1102#1095#1080#1090#1100#1089#1103' '#1095#1077#1088#1077#1079' SoftEther'
       OnClick = MenuConnectSoftEtherClick
     end
+    object MenuConnectSstp: TMenuItem
+      Caption = #1055#1086#1076#1082#1083#1102#1095#1080#1090#1100#1089#1103' '#1095#1077#1088#1077#1079' SSTP (Windows)'
+      OnClick = MenuConnectSstpClick
+    end
     object MenuDisconnectSoftEther: TMenuItem
-      Caption = #1054#1090#1082#1083#1102#1095#1080#1090#1100' SoftEther VPN'
+      Caption = #1054#1090#1082#1083#1102#1095#1080#1090#1100' VPN'
       OnClick = MenuDisconnectSoftEtherClick
     end
   end

@@ -40,6 +40,7 @@ type
     FIsAuto: Boolean; // True — запущено таймером автообновления, а не нажатием «Обновить»
     FTempServers: TStringList;
     FTempOvpn: TDictionary<string, string>;
+    FTempHostNames: TDictionary<string, string>; // IP -> полное имя хоста (xxx.opengw.net), нужно для SSTP
     procedure UpdateUI;
   protected
     procedure Execute; override;
@@ -74,6 +75,33 @@ type
     constructor Create(AForm: TForm1; AAction: TSoftEtherAction; const AServerIP: string; AServerPort: Integer);
   end;
 
+  TSstpAction = (ssaConnect, ssaDisconnect);
+
+  // Подключение через встроенный VPN-клиент Windows по протоколу MS-SSTP
+  // (без SoftEther). SSTP — это VPN внутри обычного HTTPS, поэтому он часто
+  // проходит там, где провайдер распознаёт и режет OpenVPN и протокол
+  // SoftEther. Подключение Windows создаётся через PowerShell
+  // (Add-VpnConnection) и поднимается/опускается через rasdial.exe —
+  // ни то ни другое не требует прав администратора.
+  TSstpThread = class(TThread)
+  private
+    FForm: TForm1;
+    FAction: TSstpAction;
+    FServerIP: string;
+    FServerAddress: string; // имя хоста[:порт] для Windows
+    FStatusText: string;
+    FConnectedIP: string;
+    FInProgress: Boolean; // True — подключение ещё устанавливается (SSTP остаётся «используемым», хотя IP пока пуст)
+    FAttemptId: Integer;
+    function Superseded: Boolean;
+    procedure SyncStatus;
+    procedure SyncConnected;
+  protected
+    procedure Execute; override;
+  public
+    constructor Create(AForm: TForm1; AAction: TSstpAction; const AServerIP, AServerAddress: string);
+  end;
+
   // Фоновая проверка активного SoftEther-подключения: спрашивает у vpncmd,
   // жива ли сессия (то же самое, что уже используется при установлении
   // соединения), и параллельно пингует сам сервер — только для отображения.
@@ -85,13 +113,14 @@ type
     FForm: TForm1;
     FTargetIP: string;
     FGeneration: Integer;
+    FViaSstp: Boolean; // подключение через SSTP Windows — проверяем его через rasdial, а не vpncmd
     FSessionAlive: Boolean;
     FPingText: string;
     procedure SyncResult;
   protected
     procedure Execute; override;
   public
-    constructor Create(AForm: TForm1; const ATargetIP: string; AGeneration: Integer);
+    constructor Create(AForm: TForm1; const ATargetIP: string; AGeneration: Integer; AViaSstp: Boolean = False);
   end;
 
   // Проверяет последний релиз на GitHub (см. GitHubRepoOwner/GitHubRepoName)
@@ -148,6 +177,7 @@ type
     MenuRecheckServer: TMenuItem;
     MenuSaveOvpn: TMenuItem;
     MenuConnectSoftEther: TMenuItem;
+    MenuConnectSstp: TMenuItem;
     MenuDisconnectSoftEther: TMenuItem;
     SaveDialog1: TSaveDialog;
     OpenDialog1: TOpenDialog;
@@ -185,6 +215,7 @@ type
     procedure MenuRecheckServerClick(Sender: TObject);
     procedure MenuSaveOvpnClick(Sender: TObject);
     procedure MenuConnectSoftEtherClick(Sender: TObject);
+    procedure MenuConnectSstpClick(Sender: TObject);
     procedure MenuDisconnectSoftEtherClick(Sender: TObject);
     procedure TrayIcon1DblClick(Sender: TObject);
     procedure MenuTrayShowClick(Sender: TObject);
@@ -200,6 +231,9 @@ type
     procedure MenuTrayCheckUpdateClick(Sender: TObject);
   private
     FOvpnConfigs: TDictionary<string, string>; // IP -> декодированный .ovpn (заполняется при обновлении списка)
+    FHostNames: TDictionary<string, string>;   // IP -> имя хоста xxx.opengw.net (для SSTP; хранится в hostnames.txt)
+    FSstpInUse: Boolean;                        // True — текущее (или устанавливаемое) подключение идёт через SSTP Windows, а не SoftEther
+    FSstpAttemptId: Integer;                    // Номер последнего запущенного TSstpThread (как FSoftEtherAttemptId)
     FContextRow: Integer;                      // Строка, по которой кликнули правой кнопкой (для контекстного меню)
     FSortColumn: Integer;                      // Текущая колонка сортировки (-1 — нет)
     FSortAscending: Boolean;                   // Направление текущей сортировки
@@ -230,6 +264,8 @@ type
     procedure SaveOvpnForRow(ARow: Integer);
     function LocateVpnCmd: string;
     procedure StartCheckForRow(ARow: Integer);
+    procedure LoadHostNames;
+    procedure SaveHostNames;
     procedure SetVpnStatusText(const S: string);
     procedure SetConnectedServerIP(const IP: string);
     function EnsureElevatedForSoftEther: Boolean;
@@ -378,6 +414,9 @@ const
   SoftEtherNicName = 'VPN'; // имя виртуального адаптера по умолчанию у SoftEther VPN Client Manager
   VpnCmdPathCacheFile = 'vpncmd_path.txt';
   SoftEtherLogFile = 'softether_log.txt'; // журнал команд vpncmd при подключении (см. AppendSoftEtherLog)
+  SstpConnectionName = 'MyVPNGate SSTP';  // имя VPN-подключения Windows, которое программа создаёт/переиспользует для SSTP
+  VpnGateDomainSuffix = '.opengw.net';    // DNS-домен VPN Gate: короткое имя хоста из API + этот суффикс
+  HostNamesFile = 'hostnames.txt';        // IP=имя хоста, сохраняется при обновлении списка (для SSTP)
   // Если рядом с программой лежит файл с этим именем — считаем его
   // официальным установщиком SoftEther VPN Client и предлагаем запустить
   // его сам, вместо того чтобы отправлять пользователя искать его в сети
@@ -961,10 +1000,132 @@ begin
   end;
 end;
 
+{ TSstpThread }
+
+constructor TSstpThread.Create(AForm: TForm1; AAction: TSstpAction; const AServerIP, AServerAddress: string);
+begin
+  inherited Create(False);
+  FreeOnTerminate := True;
+  FForm := AForm;
+  FAction := AAction;
+  FServerIP := AServerIP;
+  FServerAddress := AServerAddress;
+  Inc(AForm.FSstpAttemptId);
+  FAttemptId := AForm.FSstpAttemptId;
+end;
+
+function TSstpThread.Superseded: Boolean;
+begin
+  Result := FAttemptId <> FForm.FSstpAttemptId;
+end;
+
+procedure TSstpThread.SyncStatus;
+begin
+  if Superseded then Exit;
+  FForm.SetVpnStatusText(FStatusText);
+end;
+
+procedure TSstpThread.SyncConnected;
+begin
+  if Superseded then Exit;
+  FForm.FSstpInUse := FInProgress or (FConnectedIP <> '');
+  FForm.SetConnectedServerIP(FConnectedIP);
+  FForm.SetVpnStatusText(FStatusText);
+end;
+
+// Расшифровка кода завершения rasdial.exe (это код ошибки RAS Windows).
+// Сам текст ответа rasdial — в OEM-кодировке консоли и на языке Windows,
+// поэтому полагаемся на код, а не на текст.
+function DescribeRasError(Code: DWORD): string;
+begin
+  case Code of
+    691: Result := 'сервер отклонил логин/пароль';
+    800, 809: Result := 'сервер не ответил по SSTP — порт закрыт или соединение блокируется по пути';
+    868: Result := 'не удалось найти адрес сервера по имени (DNS)';
+    651, 720: Result := 'ошибка VPN-адаптера Windows';
+    $80092013: Result := 'Windows не смогла проверить отзыв сертификата сервера. ' +
+      'Обычно помогает параметр реестра HKLM\SYSTEM\CurrentControlSet\Services\SstpSvc\Parameters, ' +
+      'DWORD NoCertRevocationCheck = 1 (нужны права администратора), затем повторить';
+    $800B0109, $800B010F: Result := 'сертификат сервера не принят Windows';
+  else
+    Result := 'код ошибки ' + IntToStr(Code);
+  end;
+end;
+
+procedure TSstpThread.Execute;
+var
+  Output, Cmd: string;
+  ExitCode: DWORD;
+begin
+  if FAction = ssaDisconnect then
+  begin
+    FStatusText := 'VPN: отключение SSTP...';
+    Synchronize(SyncStatus);
+    AppendSoftEtherLog('=== SSTP: отключение ===');
+    RunProcessCapture('rasdial "' + SstpConnectionName + '" /disconnect', 30000, Output, ExitCode);
+    AppendSoftEtherLog('> rasdial /disconnect  [код ' + IntToStr(Integer(ExitCode)) + ']');
+    FStatusText := 'VPN: отключено';
+    FConnectedIP := '';
+    Synchronize(SyncConnected);
+    Exit;
+  end;
+
+  FConnectedIP := '';
+  FInProgress := True;
+  FStatusText := 'VPN: настройка SSTP-подключения к ' + FServerAddress + '...';
+  Synchronize(SyncConnected);
+  FInProgress := False; // все следующие SyncConnected — уже итог попытки
+  AppendSoftEtherLog('=== SSTP: подключение к ' + FServerAddress + ' (' + FServerIP + ') ===');
+
+  // Прежнее подключение (если было) — опускаем, иначе Windows не даст
+  // пересоздать его с новым адресом сервера
+  RunProcessCapture('rasdial "' + SstpConnectionName + '" /disconnect', 30000, Output, ExitCode);
+  if Superseded then Exit;
+
+  // Пересоздаём подключение Windows с нужным сервером. Без -AllUserConnection
+  // оно создаётся для текущего пользователя и прав администратора не требует.
+  Cmd := 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "' +
+    'Remove-VpnConnection -Name ''' + SstpConnectionName + ''' -Force -ErrorAction SilentlyContinue; ' +
+    'Add-VpnConnection -Name ''' + SstpConnectionName + ''' -ServerAddress ''' + FServerAddress + ''' ' +
+    '-TunnelType Sstp -AuthenticationMethod MSChapv2 -EncryptionLevel Required ' +
+    '-RememberCredential -Force -ErrorAction Stop"';
+  RunProcessCapture(Cmd, 60000, Output, ExitCode);
+  AppendSoftEtherLog('> Add-VpnConnection ' + FServerAddress + '  [код ' + IntToStr(Integer(ExitCode)) + ']' +
+    sLineBreak + Trim(Output));
+  if Superseded then Exit;
+  if ExitCode <> 0 then
+  begin
+    FStatusText := 'VPN: не удалось создать SSTP-подключение Windows (подробности в ' + SoftEtherLogFile + ')';
+    Synchronize(SyncConnected);
+    Exit;
+  end;
+
+  FStatusText := 'VPN: подключение по SSTP к ' + FServerAddress + '...';
+  Synchronize(SyncStatus);
+
+  // rasdial ждёт, пока подключение установится или окончательно не удастся
+  RunProcessCapture(Format('rasdial "%s" %s %s', [SstpConnectionName, SoftEtherUser, SoftEtherPassword]),
+    120000, Output, ExitCode);
+  AppendSoftEtherLog('> rasdial ' + SstpConnectionName + '  [код ' + IntToStr(Integer(ExitCode)) + ']' +
+    sLineBreak + Trim(Output));
+  if Superseded then Exit;
+
+  if ExitCode = 0 then
+  begin
+    FConnectedIP := FServerIP;
+    FStatusText := 'VPN: подключено по SSTP к ' + FServerIP;
+  end
+  else
+    FStatusText := 'VPN: SSTP-подключение к ' + FServerAddress + ' не удалось: ' + DescribeRasError(ExitCode);
+  AppendSoftEtherLog(FStatusText);
+  Synchronize(SyncConnected);
+end;
+
 { TConnectionMonitorThread }
 
-constructor TConnectionMonitorThread.Create(AForm: TForm1; const ATargetIP: string; AGeneration: Integer);
+constructor TConnectionMonitorThread.Create(AForm: TForm1; const ATargetIP: string; AGeneration: Integer; AViaSstp: Boolean);
 begin
+  FViaSstp := AViaSstp;
   inherited Create(False);
   FreeOnTerminate := True;
   FForm := AForm;
@@ -989,7 +1150,14 @@ begin
   // соединения (см. TSoftEtherThread.Execute): "Connection Completed" /
   // "Session Established", а не буквальное "Connected"
   FSessionAlive := False;
-  if FForm.FVpnCmdPath <> '' then
+  if FViaSstp then
+  begin
+    // rasdial без параметров перечисляет активные подключения Windows —
+    // текст вокруг локализован, но имя самого подключения остаётся как есть
+    RunProcessCapture('rasdial', 10000, Output, ExitCode);
+    FSessionAlive := Pos(LowerCase(SstpConnectionName), LowerCase(Output)) > 0;
+  end
+  else if FForm.FVpnCmdPath <> '' then
   begin
     RunVpnCmd(FForm.FVpnCmdPath, 'AccountStatusGet ' + SoftEtherAccountName, Output);
     LowerOutput := LowerCase(Output);
@@ -1282,6 +1450,8 @@ begin
   ApplyAutoUpdateTimer;
 
   FOvpnConfigs := TDictionary<string, string>.Create;
+  FHostNames := TDictionary<string, string>.Create;
+  LoadHostNames;
   FContextRow := -1;
   FSortColumn := -1;
   FSortAscending := True;
@@ -1387,6 +1557,7 @@ end;
 procedure TForm1.FormDestroy(Sender: TObject);
 begin
   FOvpnConfigs.Free;
+  FHostNames.Free;
   FMasterList.Free;
   FFavorites.Free;
   FCascadeAttemptIPs.Free;
@@ -2157,6 +2328,7 @@ begin
     MenuSaveOvpn.Enabled := HasRow;
     MenuShowQR.Enabled := HasRow;
     MenuConnectSoftEther.Enabled := HasRow;
+    MenuConnectSstp.Enabled := HasRow;
 
     MenuToggleFavorite.Enabled := HasRow;
     if HasRow and IsFavorite(Trim(StringGrid1.Cells[1, ARow])) then
@@ -2478,6 +2650,86 @@ begin
   end;
 end;
 
+procedure TForm1.LoadHostNames;
+var
+  SL: TStringList;
+  i: Integer;
+  FileName: string;
+begin
+  FileName := ExtractFilePath(ParamStr(0)) + HostNamesFile;
+  if not FileExists(FileName) then Exit;
+  SL := TStringList.Create;
+  try
+    try
+      SL.LoadFromFile(FileName);
+      for i := 0 to SL.Count - 1 do
+        if (SL.Names[i] <> '') and (SL.ValueFromIndex[i] <> '') then
+          FHostNames.AddOrSetValue(SL.Names[i], SL.ValueFromIndex[i]);
+    except
+      // повреждённый файл — просто работаем без него до следующего «Обновить»
+    end;
+  finally
+    SL.Free;
+  end;
+end;
+
+procedure TForm1.SaveHostNames;
+var
+  SL: TStringList;
+  Pair: TPair<string, string>;
+begin
+  if FHostNames = nil then Exit;
+  SL := TStringList.Create;
+  try
+    for Pair in FHostNames do
+      SL.Add(Pair.Key + '=' + Pair.Value);
+    try
+      SL.SaveToFile(ExtractFilePath(ParamStr(0)) + HostNamesFile);
+    except
+    end;
+  finally
+    SL.Free;
+  end;
+end;
+
+procedure TForm1.MenuConnectSstpClick(Sender: TObject);
+var
+  IP, HostName, Address: string;
+  Port: Integer;
+begin
+  if (FContextRow <= 0) or (FContextRow >= StringGrid1.RowCount) then Exit;
+  IP := Trim(StringGrid1.Cells[1, FContextRow]);
+  if IP = '' then Exit;
+
+  // Сертификат сервера выписан на имя хоста, поэтому подключиться по IP
+  // Windows не даст — без имени SSTP невозможен
+  if (FHostNames = nil) or (not FHostNames.TryGetValue(IP, HostName)) or (HostName = '') then
+  begin
+    ShowMessage('Для SSTP нужно имя хоста сервера, а для ' + IP + ' оно неизвестно. ' +
+      'Нажмите «Обновить», чтобы загрузить свежий список серверов, и попробуйте снова.');
+    Exit;
+  end;
+
+  if (FConnectedServerIP <> '') and not FSstpInUse then
+  begin
+    ShowMessage('Сейчас активно подключение через SoftEther. Сначала отключите его, затем подключайтесь через SSTP.');
+    Exit;
+  end;
+
+  // SSTP — это TCP: публичные узлы VPN Gate принимают его на тех же TCP-портах,
+  // что и SoftEther, поэтому порт выбираем так же (UDP-порт OpenVPN не подходит)
+  Port := StrToIntDef(StringGrid1.Cells[2, FContextRow], 443);
+  if SameText(Trim(StringGrid1.Cells[6, FContextRow]), 'UDP') then
+    Port := 443;
+  Address := HostName;
+  if Port <> 443 then
+    Address := Address + ':' + IntToStr(Port); // Windows понимает порт прямо в адресе сервера
+
+  FreeAndNil(FCascadeAttemptIPs);
+  FSstpInUse := True;
+  TSstpThread.Create(Self, ssaConnect, IP, Address);
+end;
+
 procedure TForm1.MenuConnectSoftEtherClick(Sender: TObject);
 var
   IP: string;
@@ -2513,6 +2765,10 @@ procedure TForm1.ConnectToServer(const IP: string; APort: Integer);
 begin
   if IP = '' then Exit;
   if not EnsureElevatedForSoftEther then Exit;
+
+  // Два VPN сразу не нужны — если было поднято SSTP-подключение, опускаем его
+  if FSstpInUse then
+    TSstpThread.Create(Self, ssaDisconnect, '', '');
 
   if FVpnCmdPath = '' then
     FVpnCmdPath := LocateVpnCmd;
@@ -2675,7 +2931,10 @@ begin
   if FReconnecting then Exit; // переподключение уже запущено этой же серией неудачных проверок
 
   FailedIP := FConnectedServerIP;
-  if FAutoReconnectEnabled then
+  // Автопереподключение перебирает серверы через SoftEther — для SSTP
+  // (который выбирают как раз тогда, когда SoftEther не проходит) оно
+  // бессмысленно, поэтому только сообщаем об обрыве
+  if FAutoReconnectEnabled and not FSstpInUse then
   begin
     FReconnecting := True;
     SetVpnStatusText('VPN: связь с ' + FailedIP + ' потеряна, переподключение...');
@@ -2685,17 +2944,25 @@ begin
   begin
     SetVpnStatusText('VPN: связь с ' + FailedIP + ' потеряна');
     SetConnectedServerIP(''); // сама VPN-сессия может остаться висеть — это лишь снимает отметку в программе
+    FSstpInUse := False;
   end;
 end;
 
 procedure TForm1.PingTimerTimer(Sender: TObject);
 begin
   if FConnectedServerIP = '' then Exit;
-  TConnectionMonitorThread.Create(Self, FConnectedServerIP, FConnectionGeneration);
+  TConnectionMonitorThread.Create(Self, FConnectedServerIP, FConnectionGeneration, FSstpInUse);
 end;
 
 procedure TForm1.MenuDisconnectSoftEtherClick(Sender: TObject);
 begin
+  // Пункт меню отключает то подключение, которое сейчас используется
+  if FSstpInUse then
+  begin
+    TSstpThread.Create(Self, ssaDisconnect, '', '');
+    Exit;
+  end;
+
   if not EnsureElevatedForSoftEther then Exit;
 
   if FVpnCmdPath = '' then
@@ -2733,6 +3000,7 @@ begin
   FIsAuto := AIsAuto;
   FTempServers := TStringList.Create;
   FTempOvpn := TDictionary<string, string>.Create;
+  FTempHostNames := TDictionary<string, string>.Create;
   FSuccess := False;
   inherited Create(False);
   FreeOnTerminate := True;
@@ -2742,6 +3010,7 @@ destructor TUpdateThread.Destroy;
 begin
   FTempServers.Free;
   FTempOvpn.Free;
+  FTempHostNames.Free;
   inherited;
 end;
 
@@ -2868,6 +3137,12 @@ begin
           // Сохраняем декодированный OpenVPN-конфиг для последующего экспорта в .ovpn
           if (OVPN <> '') and (Trim(Columns[1]) <> '') then
             FTempOvpn.AddOrSetValue(Columns[1], OVPN);
+
+          // Колонка 0 (HostName) — короткое имя вида "public-vpn-227"; полное
+          // имя в DNS VPN Gate — с суффиксом .opengw.net. На него (а не на
+          // IP) выписан сертификат сервера, и без него SSTP не подключится.
+          if (Trim(Columns[0]) <> '') and (Trim(Columns[1]) <> '') then
+            FTempHostNames.AddOrSetValue(Columns[1], Trim(Columns[0]) + VpnGateDomainSuffix);
         end;
       end;
     end;
@@ -2920,6 +3195,13 @@ begin
   FreeAndNil(FForm.FOvpnConfigs);
   FForm.FOvpnConfigs := FTempOvpn;
   FTempOvpn := nil;
+
+  // Имена хостов (для SSTP) — так же, как .ovpn, но ещё и сохраняем на диск:
+  // иначе после перезапуска программы SSTP был бы недоступен до «Обновить»
+  FreeAndNil(FForm.FHostNames);
+  FForm.FHostNames := FTempHostNames;
+  FTempHostNames := nil;
+  FForm.SaveHostNames;
 
   // Свежий список ещё не отсортирован — сбрасываем стрелку в шапке таблицы
   FForm.FSortColumn := -1;
