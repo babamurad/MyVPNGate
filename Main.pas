@@ -614,6 +614,70 @@ begin
   end;
 end;
 
+// Строки собственного журнала SoftEther VPN Client (client_log\client_ГГГГММДД.log
+// в папке установки, рядом с vpncmd.exe), записанные начиная с момента Since.
+// Только там видна настоящая причина неудачи: vpncmd в AccountStatusGet
+// показывает лишь "Retrying" или — после того как SoftEther сам прекратил
+// попытки — "not connected" (код 37), без объяснения почему.
+// LastError — последняя строка с ошибкой, без метки времени ('' если нет).
+function ReadSoftEtherClientLog(const VpnCmdPath: string; Since: TDateTime; out LastError: string): string;
+const
+  MaxTailBytes = 65536; // журнал за день бывает большим — нужен только хвост
+  MaxLines = 30;
+var
+  LogPath, SinceStr, Line: string;
+  FS: TFileStream;
+  Bytes: TBytes;
+  Lines, Picked: TStringList;
+  i: Integer;
+begin
+  Result := '';
+  LastError := '';
+  LogPath := ExtractFilePath(VpnCmdPath) + 'client_log\client_' + FormatDateTime('yyyymmdd', Since) + '.log';
+  if not FileExists(LogPath) then Exit;
+  SinceStr := FormatDateTime('yyyy-mm-dd hh:nn:ss', Since);
+
+  Lines := TStringList.Create;
+  Picked := TStringList.Create;
+  try
+    try
+      // SoftEther держит файл открытым на запись — читаем без блокировки
+      FS := TFileStream.Create(LogPath, fmOpenRead or fmShareDenyNone);
+      try
+        if FS.Size > MaxTailBytes then
+          FS.Position := FS.Size - MaxTailBytes;
+        SetLength(Bytes, FS.Size - FS.Position);
+        if Length(Bytes) > 0 then
+          FS.ReadBuffer(Bytes[0], Length(Bytes));
+      finally
+        FS.Free;
+      end;
+      Lines.Text := TEncoding.UTF8.GetString(Bytes);
+    except
+      Exit;
+    end;
+
+    // Строки журнала начинаются с метки "ГГГГ-ММ-ДД чч:мм:сс.ммм" — сравнение
+    // строк в этом формате совпадает с хронологическим
+    for i := 0 to Lines.Count - 1 do
+    begin
+      Line := Lines[i];
+      if (Length(Line) >= 19) and (Copy(Line, 1, 19) >= SinceStr) then
+      begin
+        Picked.Add(Line);
+        if Pos('rror', Line) > 0 then
+          LastError := Trim(Copy(Line, 24, MaxInt)); // без "ГГГГ-ММ-ДД чч:мм:сс.ммм "
+      end;
+    end;
+    while Picked.Count > MaxLines do
+      Picked.Delete(0);
+    Result := Trim(Picked.Text);
+  finally
+    Picked.Free;
+    Lines.Free;
+  end;
+end;
+
 // Собирает файл настроек VPN-подключения SoftEther Client в его собственном
 // текстовом формате (том же, что даёт "AccountExport") и импортирует его
 // через AccountImport — так надёжнее, чем собирать аккаунт командами
@@ -820,6 +884,8 @@ end;
 procedure TSoftEtherThread.Execute;
 var
   Output, LowerOutput, ConfigPath, LastStatusOutput, SessionStatus, ErrorText: string;
+  ClientLog, ClientLogError: string;
+  ConnectStartedAt: TDateTime;
   Attempt: Integer;
   ExitCode: DWORD;
   Connected, Failed: Boolean;
@@ -899,6 +965,9 @@ begin
     [SoftEtherAccountName, SoftEtherPassword]), Output);
   if Superseded then Exit;
 
+  // Время начала — чтобы потом взять из журнала SoftEther только строки этой
+  // попытки. С запасом в секунду: метки журнала и Now могут чуть разойтись.
+  ConnectStartedAt := Now - 1 / SecsPerDay;
   ExitCode := RunCmd('AccountConnect ' + SoftEtherAccountName, Output);
   if Superseded then Exit;
   if ExitCode <> 0 then
@@ -990,6 +1059,16 @@ begin
       // серверу в фоне (NumRetry в настройках — без ограничения)
       RunCmd('AccountDisconnect ' + SoftEtherAccountName, Output);
     end;
+
+    // Настоящая причина — в журнале самого SoftEther Client. Особенно важно
+    // для кода 37 ("not connected") через пару секунд после старта: он
+    // значит лишь, что SoftEther сам бросил попытку, а не почему.
+    ClientLog := ReadSoftEtherClientLog(FForm.FVpnCmdPath, ConnectStartedAt, ClientLogError);
+    if ClientLog <> '' then
+      AppendSoftEtherLog('Журнал SoftEther Client за эту попытку:' + sLineBreak + ClientLog);
+    if ClientLogError <> '' then
+      FStatusText := 'VPN: ошибка подключения к ' + FServerIP + ' — SoftEther: ' + ClientLogError;
+
     AppendSoftEtherLog(FStatusText);
     // Сообщаем форме именно о НЕУДАЧЕ этой попытки (в отличие от текста
     // статуса, который просто отображается) — если подключение шло через
