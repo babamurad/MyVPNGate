@@ -1031,6 +1031,15 @@ begin
   FForm.FSstpInUse := FInProgress or (FConnectedIP <> '');
   FForm.SetConnectedServerIP(FConnectedIP);
   FForm.SetVpnStatusText(FStatusText);
+  // Итог ручного SSTP-подключения показываем и окном — иначе неудачу легко
+  // не заметить в статус-баре и решить, что «ничего не происходит»
+  if (FAction = ssaConnect) and not FInProgress then
+  begin
+    if FConnectedIP <> '' then
+      MessageDlg(FStatusText, mtInformation, [mbOK], 0)
+    else
+      MessageDlg(FStatusText, mtWarning, [mbOK], 0);
+  end;
 end;
 
 // Расшифровка кода завершения rasdial.exe (это код ошибки RAS Windows).
@@ -1608,6 +1617,17 @@ begin
                   StringGrid1.ColWidths[5] - StringGrid1.ColWidths[6] - 20;
     if TotalWidth > 150 then
       StringGrid1.ColWidths[7] := TotalWidth;
+  end;
+
+  // Панель статуса VPN (2) забирает всё свободное место: при фиксированных
+  // 300 пикселях текст ошибки обрезался на полуслове, и было не понять, что
+  // произошло. Остальные панели — фиксированной ширины.
+  if Assigned(StatusBar1) and (StatusBar1.Panels.Count > 3) then
+  begin
+    TotalWidth := StatusBar1.ClientWidth - StatusBar1.Panels[0].Width -
+                  StatusBar1.Panels[1].Width - StatusBar1.Panels[3].Width - 20;
+    if TotalWidth > 300 then
+      StatusBar1.Panels[2].Width := TotalWidth;
   end;
 end;
 
@@ -2517,6 +2537,9 @@ procedure TForm1.SetVpnStatusText(const S: string);
 begin
   if StatusBar1.Panels.Count > 2 then
     StatusBar1.Panels[2].Text := S;
+  // Полный текст — во всплывающей подсказке, если он всё же не влез в панель
+  StatusBar1.Hint := S;
+  StatusBar1.ShowHint := S <> '';
 
   // Дублируем в подсказку значка трея — это единственное, что видно, пока
   // окно свёрнуто
