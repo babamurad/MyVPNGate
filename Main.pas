@@ -1036,6 +1036,22 @@ begin
       ErrorText := CompactVpnCmdOutput(Output);
       Break;
     end;
+
+    // "Retrying" — значит, первая попытка уже провалилась. Если причина уже
+    // есть в журнале SoftEther, ждать минуту бессмысленно: следующие попытки
+    // к тому же серверу на практике падают с той же ошибкой — сразу
+    // сообщаем о неудаче (и каскад быстрее переходит к следующему серверу)
+    if SameText(SessionStatus, 'Retrying') then
+    begin
+      ReadSoftEtherClientLog(FForm.FVpnCmdPath, ConnectStartedAt, ClientLogError);
+      if ClientLogError <> '' then
+      begin
+        Failed := True;
+        ErrorText := ClientLogError;
+        RunCmd('AccountDisconnect ' + SoftEtherAccountName, Output); // не даём SoftEther повторять в фоне
+        Break;
+      end;
+    end;
   end;
 
   if Connected then
@@ -1124,6 +1140,26 @@ end;
 // Расшифровка кода завершения rasdial.exe (это код ошибки RAS Windows).
 // Сам текст ответа rasdial — в OEM-кодировке консоли и на языке Windows,
 // поэтому полагаемся на код, а не на текст.
+// Консольные утилиты Windows (rasdial) пишут в OEM-кодировке (cp866 у
+// русской Windows), а RunProcessCapture читает вывод как ANSI (cp1251) —
+// русский текст превращался в кракозябры. Возвращаем исходные байты и
+// декодируем их правильно.
+function OemToString(const AnsiDecoded: string): string;
+var
+  Oem: TEncoding;
+begin
+  Result := AnsiDecoded;
+  try
+    Oem := TEncoding.GetEncoding(GetOEMCP);
+    try
+      Result := Oem.GetString(TEncoding.ANSI.GetBytes(AnsiDecoded));
+    finally
+      Oem.Free;
+    end;
+  except
+  end;
+end;
+
 function DescribeRasError(Code: DWORD): string;
 begin
   case Code of
@@ -1201,7 +1237,7 @@ begin
   RunProcessCapture(Format('rasdial "%s" %s %s', [SstpConnectionName, SoftEtherUser, SoftEtherPassword]),
     120000, Output, ExitCode);
   AppendSoftEtherLog('> rasdial ' + SstpConnectionName + '  [код ' + IntToStr(Integer(ExitCode)) + ']' +
-    sLineBreak + Trim(Output));
+    sLineBreak + Trim(OemToString(Output)));
   if Superseded then Exit;
 
   if ExitCode = 0 then
